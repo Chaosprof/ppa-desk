@@ -22,7 +22,7 @@ def _row(check: str, value: str, ok: bool) -> dict:
     return {"check": check, "value": value, "ok": bool(ok)}
 
 
-def run(data: Dataset, curve: Curve, start: dt.date) -> list[dict]:
+def run(data: Dataset, curve: Curve, start: dt.date, fwd: dict) -> list[dict]:
     cfg = data.cfg
     rows = []
 
@@ -73,6 +73,13 @@ def run(data: Dataset, curve: Curve, start: dt.date) -> list[dict]:
         quote = next(q.price for q in curve.quotes if q.contract == name.split()[0])
         rows.append(_row(f"{name} implied by finer contracts", f"{implied:.3f} vs {quote:.2f}",
                          abs(implied - quote) < 0.01))
+
+    h = data.omip_history
+    on_date = h[h["date"] == pd.Timestamp(cfg.valuation_date)].set_index("contract")["price"]
+    diffs = [abs(on_date[q.contract] - q.price) for q in curve.quotes if not q.extrapolated and q.contract in on_date]
+    rows.append(_row("Futures inputs vs OMIP history", f"{len(diffs)} matched, largest gap {max(diffs, default=0):.2f}",
+                     len(diffs) > 0 and max(diffs) < 0.005))
+    rows.append(_row("OMIP settlement days", f"{fwd['days']:,} since {fwd['first']}", fwd["days"] > 2000))
 
     for site in cfg.sites:
         w = data.weather(site)

@@ -2,12 +2,14 @@
 
 Energy-Charts (Fraunhofer ISE) for day-ahead prices, generation, forecasts and installed capacity;
 SMARD (Bundesnetzagentur) as an independent cross-check; Open-Meteo ERA5 for site weather;
-ECB for the euro discount curve. No API keys are needed.
+ECB for the euro discount curve; OMIP for daily German futures reference prices. No API keys are needed.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import html
+import re
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +23,7 @@ ENERGY_CHARTS = "https://api.energy-charts.info"
 SMARD = "https://www.smard.de/app/chart_data"
 OPEN_METEO = "https://archive-api.open-meteo.com/v1/archive"
 ECB = "https://data-api.ecb.europa.eu/service/data/YC"
+OMIP = "https://www.omip.pt/en/dados-mercado"
 
 DE_LU_START = dt.date(2018, 10, 1)  # DE-AT-LU split into DE-LU and AT
 GENERATION = {"Solar": "solar", "Wind onshore": "wind_onshore", "Wind offshore": "wind_offshore", "Load": "load"}
@@ -243,3 +246,55 @@ def discount_curve(on: dt.date) -> pd.Series:
         return pd.Series(out, name="rate")
 
     return _cached(f"ecb_{on}", build)["rate"]
+
+
+# --- OMIP ----------------------------------------------------------------------------------------
+
+_OMIP_ROW = re.compile(r"FDB (M \w{3}-\d\d|Q[1-4]-\d\d|YR-\d\d)</strong></td>(.*?)</tr>", re.S)
+_OMIP_CELL = re.compile(r'<td width="">([^<]*)</td>')
+
+
+def parse_omip(page: str) -> dict[str, float]:
+    """Reference price per contract from an OMIP German base futures page, as 'Nov-25', 'Q1-26', 'Cal-26'."""
+    out = {}
+    for name, row in _OMIP_ROW.findall(page):
+        cells = [html.unescape(c).strip() for c in _OMIP_CELL.findall(row)]
+        if len(cells) < 10 or cells[9] in ("", "n.a."):
+            continue
+        kind, _, rest = name.partition(" ")
+        contract = rest if kind == "M" else name.replace("YR-", "Cal-")
+        out[contract] = float(cells[9])  # column D: the reference price for the requested date
+    return out
+
+
+def _omip_day(day: dt.date) -> dict[str, float]:
+    params = {"date": day.isoformat(), "product": "EL", "zone": "DE", "instrument": "FDB"}
+    page = _get(OMIP, params).text
+    if f"date={day.isoformat()}" not in page:  # the page answered for another date
+        return {}
+    time.sleep(1.0)  # one request a second: this is a public website, not an API
+    return parse_omip(page)
+
+
+def _omip_month(first: dt.date, last: dt.date) -> pd.DataFrame:
+    def build():
+        rows = []
+        for day in pd.bdate_range(first, last).date:
+            for contract, price in _omip_day(day).items():
+                rows.append({"date": pd.Timestamp(day), "contract": contract, "price": price})
+        return pd.DataFrame(rows, columns=["date", "contract", "price"])
+
+    return _cached(f"chunks/omip_DE_{first:%Y-%m}", build)
+
+
+def omip_history(start: dt.date, end: dt.date, log=lambda m: None) -> pd.DataFrame:
+    """Daily OMIP German base futures reference prices: rows of date, contract, price."""
+    months = pd.period_range(start, end, freq="M")
+    parts = []
+    for m in months:
+        first = max(start, m.start_time.date())
+        last = min(end, m.end_time.date())
+        parts.append(_omip_month(first, last))
+        log(f"omip {m}")
+    frame = pd.concat(parts, ignore_index=True)
+    return frame.drop_duplicates(["date", "contract"]).sort_values(["date", "contract"]).reset_index(drop=True)

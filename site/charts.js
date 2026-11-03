@@ -59,19 +59,21 @@ export function waterfall(el, rows, fmt) {
   }).join("");
 }
 
-// Vertical bars, labelled underneath; values on hover.
-export function bars(el, data, { height = 180, tipFmt } = {}) {
+// Vertical bars, labelled underneath; values on hover, or above the bars with valueFmt.
+export function bars(el, data, { height = 180, tipFmt, valueFmt } = {}) {
   const [s, width] = svg(el, height);
   const bottom = 24;
   const hi = Math.max(...data.map((d) => d.value));
-  const y = scale([0, hi], [height - bottom, 4]);
+  const y = scale([0, hi], [height - bottom, valueFmt ? 22 : 4]);
   const band = width / data.length, bw = Math.min(band * 0.56, 32);
   s.innerHTML = data.map((d, i) => {
     const cx = band * i + band / 2;
     return `<rect x="${cx - bw / 2}" y="${y(d.value)}" width="${bw}" height="${y(0) - y(d.value)}" rx="2"
         fill="var(--accent)" data-i="${i}"/>
-      <text x="${cx}" y="${height - 6}" text-anchor="middle">${d.label}</text>`;
+      <text x="${cx}" y="${height - 6}" text-anchor="middle">${d.label}</text>` +
+      (valueFmt ? `<text x="${cx}" y="${y(d.value) - 8}" text-anchor="middle" class="name">${valueFmt(d.value)}</text>` : "");
   }).join("");
+  if (!tipFmt) return;
   s.querySelectorAll("rect").forEach((r) => {
     r.addEventListener("mousemove", (e) => showTip(e, tipFmt(data[+r.dataset.i])));
     r.addEventListener("mouseleave", hideTip);
@@ -91,7 +93,7 @@ export function lines(el, xs, series, { height = 220, yFmt = (v) => v, xFmt = (v
     : `${i && vals[i - 1] != null ? "L" : "M"}${x(xs[i]).toFixed(1)},${y(v).toFixed(1)}`)).join("");
   const last = (vals) => vals.findLastIndex((v) => v != null);
   s.innerHTML =
-    ticks(lo, hi).map((v) => `<text x="${m.l - 10}" y="${y(v) + 4}" text-anchor="end">${yFmt(v)}</text>`).join("") +
+    ticks(lo - pad, hi + pad).map((v) => `<text x="${m.l - 10}" y="${y(v) + 4}" text-anchor="end">${yFmt(v)}</text>`).join("") +
     (xTicks ?? ticks(xs[0], xs[xs.length - 1], 5))
       .map((v) => `<text x="${x(v)}" y="${height - 4}" text-anchor="middle">${xFmt(v)}</text>`).join("") +
     series.map((d) => `<path d="${path(d.values)}" fill="none" stroke="${d.color}" stroke-width="2"

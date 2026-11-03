@@ -40,6 +40,10 @@ class Dataset:
         return sources.smard(4068, "DE", *self.cfg.window)
 
     @cached_property
+    def omip_history(self) -> pd.DataFrame:
+        return sources.omip_history(self.cfg["forwards"]["history_start"], self.cfg.valuation_date)
+
+    @cached_property
     def discount_curve(self) -> pd.Series:
         return sources.discount_curve(self.cfg.valuation_date)
 
@@ -49,7 +53,7 @@ class Dataset:
 
     def fetch_all(self, log=print) -> None:
         for name in ["prices", "generation", "capacity", "forecasts", "smard_prices", "smard_solar",
-                     "discount_curve"]:
+                     "discount_curve", "omip_history"]:
             log(f"fetch {name}")
             getattr(self, name)
         for site in self.cfg.sites:

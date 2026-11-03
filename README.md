@@ -13,7 +13,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest
 ```
 
-The first build downloads about 11 years of hourly market data and 21 years of ERA5 weather for four sites. Energy-Charts rate-limits, so this takes around 10 minutes. Later builds take about 20 seconds.
+The first build downloads about 11 years of hourly market data, 21 years of ERA5 weather for four sites and ten years of daily OMIP futures settlements. Energy-Charts rate-limits and OMIP is fetched at one page a second, so this takes a little over an hour. Later builds take about 20 seconds.
 
 ## Method
 
@@ -47,6 +47,13 @@ Two choices came from the data, not from priors. First, the full 2015–26 slope
 - **Clean spark spread:** Kirk's approximation on a moment-matched gas-plus-carbon basket, against a three-asset Monte Carlo, swept over correlation.
 - **2-hour battery:** valued as a swing option with 250 cycles a year by least-squares Monte Carlo, bounded by the intrinsic and perfect-foresight values. Each day it charges before it discharges.
 
+**Forward curve history** — [`forwards.py`](ppa/forwards.py)
+Daily OMIP settlements for every German base month, quarter and calendar contract since June 2016. Returns are taken within each contract, never across a roll. From them:
+- **Forward vol:** the simulation's level vol is the realised vol of calendar contracts up to three years out over the last 24 months, not an assumption.
+- **Samuelson effect:** volatility by time to delivery, rising as delivery approaches.
+- **One-factor check:** the correlation between next-year and third-year daily returns, which tests the simulation's single level factor.
+- **Hedge backtest:** a one-year PPA on the German fleet profile, bought each October from 2017 at the Cal forward times the trailing capture rate, held unhedged, with a volume hedge, and with the dashboard's value hedge.
+
 **Data quality** — [`quality.py`](ppa/quality.py)
 The checks cover:
 - Coverage and gaps in the price history.
@@ -61,11 +68,11 @@ One check is flagged on purpose: Energy-Charts solar energy runs 3.2% below SMAR
 
 ## Inputs
 
-Everything the model believes that is not fetched lives in [`inputs/market.toml`](inputs/market.toml). That covers the valuation date, futures quotes, spark-spread inputs, forward vol, imbalance spread, capacity build-out, sites and plant parameters. To revalue on a new date, change `valuation_date` and the futures, delete `data/`, and build.
+Everything the model believes that is not fetched lives in [`inputs/market.toml`](inputs/market.toml). That covers the valuation date, futures quotes, spark-spread inputs, the forward-history window, imbalance spread, capacity build-out, sites and plant parameters. To revalue on a new date, change `valuation_date` and the futures, delete `data/`, and build.
 
 ## Limits
 
-- **No free implied vols:** the 30% forward vol is an assumption.
+- **No free implied vols:** forward vol is realised, from OMIP settlements. OMIP shows no trading in German contracts, so its prices are reference marks that track EEX, not trade prints.
 - **Spark-spread gas and carbon:** indicative press quotes; replace them with EEX/ICE settlements for the valuation date.
 - **No peak quotes:** the peak/base ratio comes from the historical shape. The solver honours peak quotes when they are given.
 - **Balancing:** fleet day-ahead forecast error × single-site factor × an assumed imbalance spread, because reBAP needs registration.

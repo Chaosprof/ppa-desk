@@ -2,50 +2,51 @@
 
 ## 10-year solar PPA, South, 100 MW from 2027-01-01
 
-**Fair pay-as-produced price: €60.66/MWh** against a volume-weighted baseload forward of €96.40. The shape and capture discount is €50.66, the risk premium €1.65 and balancing €2.49; the negative-price clause adds €+19.07.
+**Fair pay-as-produced price: €60.98/MWh** against a volume-weighted baseload forward of €96.40. The shape and capture discount is €50.67, the risk premium €1.36 and balancing €2.49; the negative-price clause adds €+19.10.
 
 | Component | €/MWh |
 |---|---:|
 | Baseload forward | +96.40 |
 | Profile | -35.21 |
-| Price–volume correlation | -4.42 |
+| Price–volume correlation | -4.43 |
 | Cannibalisation | -11.03 |
-| Risk premium (P90) | -1.65 |
+| Risk premium (P90) | -1.36 |
 | Balancing | -2.49 |
-| Negative-price clause | +19.07 |
-| **Fair price** | **60.66** |
+| Negative-price clause | +19.10 |
+| **Fair price** | **60.98** |
 
-**Hedge:** sell 10.0 MW of Cal-27 baseload, stepping to 10.0 MW by Cal-36. The hedge cuts lifetime P&L volatility from €38.0m to €2.6m; what remains is shape (€1.6m) and volume (€0.4m).
+**Hedge:** sell 9.9 MW of Cal-27 baseload, stepping to 10.0 MW by Cal-36. The hedge cuts lifetime P&L volatility from €25.2m to €1.7m; what remains is shape (€1.1m) and volume (€0.4m). In history (2017–2025), the same rule on a one-year solar PPA bought each October cut year-to-year P&L volatility from €8.7m to €1.3m, against €1.7m for a volume hedge.
 
 **Volume:** P50 1432 full-load hours, P90 1326 over one year and 1339 over ten (ERA5 2005–2025).
 
-**Baseload-shaped alternative:** €96.40/MWh on 16.3 MW, leaving the generator a realised €47.27–73.77/MWh (P10–P90).
+**Baseload-shaped alternative:** €96.40/MWh on 16.3 MW, leaving the generator a realised €51.87–70.84/MWh (P10–P90).
 
 ## 10-year wind PPA, North, 100 MW from 2027-01-01
 
-**Fair pay-as-produced price: €84.49/MWh** against a volume-weighted baseload forward of €96.40. The shape and capture discount is €13.78, the risk premium €3.09 and balancing €2.82; the negative-price clause adds €+7.77.
+**Fair pay-as-produced price: €85.29/MWh** against a volume-weighted baseload forward of €96.40. The shape and capture discount is €13.79, the risk premium €2.30 and balancing €2.82; the negative-price clause adds €+7.80.
 
 | Component | €/MWh |
 |---|---:|
 | Baseload forward | +96.40 |
 | Profile | +2.34 |
-| Price–volume correlation | -14.76 |
+| Price–volume correlation | -14.77 |
 | Cannibalisation | -1.36 |
-| Risk premium (P90) | -3.09 |
+| Risk premium (P90) | -2.30 |
 | Balancing | -2.82 |
-| Negative-price clause | +7.77 |
-| **Fair price** | **84.49** |
+| Negative-price clause | +7.80 |
+| **Fair price** | **85.29** |
 
-**Hedge:** sell 35.4 MW of Cal-27 baseload, stepping to 34.0 MW by Cal-36. The hedge cuts lifetime P&L volatility from €130.3m to €13.1m; what remains is shape (€15.5m) and volume (€3.4m).
+**Hedge:** sell 35.5 MW of Cal-27 baseload, stepping to 34.1 MW by Cal-36. The hedge cuts lifetime P&L volatility from €86.5m to €8.4m; what remains is shape (€9.9m) and volume (€3.3m). In history (2017–2025), the same rule on a one-year wind PPA bought each October cut year-to-year P&L volatility from €14.4m to €1.8m, against €5.4m for a volume hedge.
 
 **Volume:** P50 3490 full-load hours, P90 3063 over one year and 3125 over ten (ERA5 2005–2025).
 
-**Baseload-shaped alternative:** €96.40/MWh on 39.8 MW, leaving the generator a realised €83.23–92.69/MWh (P10–P90).
+**Baseload-shaped alternative:** €96.40/MWh on 39.8 MW, leaving the generator a realised €84.21–91.17/MWh (P10–P90).
 
 ## Assumptions
 
 - Curve: OMIP DE base reference prices, 2026-10-30; flat beyond the last listed calendar year.
 - Shape: day-ahead prices over the 36 months before the valuation month.
-- 800 joint price–weather paths; forward vol, imbalance spread and capacity build-out as set in `inputs/market.toml`.
+- Forward vol 21%: realised on calendar contracts over the last 24 months of OMIP settlements (history since 2016-06-01).
+- 800 joint price–weather paths; imbalance spread and capacity build-out as set in `inputs/market.toml`.
 
-Built 2026-11-03T09:51:01+00:00 from public data. Interactive version: `python -m ppa serve`.
+Built 2026-11-03T15:25:22+00:00 from public data. Interactive version: `python -m ppa serve`.

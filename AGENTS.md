@@ -12,7 +12,7 @@
 ## Flow
 
 `inputs/market.toml` → `config.py` → `sources.py` (HTTP + parquet cache in `data/`) → `dataset.py` →
-`hpfc.py`, `generation.py`, `capture.py` → `simulate.py` → `valuation.py`, `options.py`, `quality.py` →
+`hpfc.py`, `generation.py`, `capture.py`, `forwards.py` → `simulate.py` → `valuation.py`, `options.py`, `quality.py` →
 `build.py` writes `site/data.json` (the only contract with the front end) and `MEMO.md`.
 
 ## Conventions
@@ -32,6 +32,7 @@
 - The risk premium makes the hedged P10 exactly zero.
 - The valuation decomposition adds up, and the hedge cuts risk.
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
+- OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
 
 ## Front end
 

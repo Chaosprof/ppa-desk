@@ -53,8 +53,13 @@ vom = 3.0                    # EUR/MWh
 vol = { power = 0.60, gas = 0.55, carbon = 0.40 }
 corr = { power_gas = 0.80, power_carbon = 0.45, gas_carbon = 0.35 }
 
+[forwards]
+# Daily OMIP reference prices since OMIP listed German futures. The simulation's forward vol is the
+# realised vol of calendar contracts up to three years out over the trailing window (no free implied vols).
+history_start = 2016-06-01
+vol_window_months = 24
+
 [risk]
-forward_vol = 0.30           # annualised vol of calendar baseload forwards (no free implied vols)
 volume_quantile = 0.10       # premium sized so the hedged deal breaks even at the P90 outcome
 paths = 800
 seed = 7

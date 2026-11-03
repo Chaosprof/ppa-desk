@@ -11,6 +11,7 @@ const STEPS = [
 ];
 
 const eur = (v, d = 2) => `€${v.toFixed(d)}`;
+const pct = (v) => `${Math.round(100 * v)}%`;
 const signed = (v) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`;
 const date = (d) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const yy = (year) => `’${String(year).slice(2)}`;
@@ -81,7 +82,7 @@ function price(el) {
 }
 
 function hedge(el) {
-  const v = scenario();
+  const v = scenario(), bt = D.forwards.backtest[state.tech];
   el.innerHTML = `
     <section><div class="stats">
       ${stat("Unhedged volatility", `€${v.risk.sd_open.toFixed(1)}m`)}
@@ -90,14 +91,18 @@ function hedge(el) {
     <div class="grid">
       <section><h2>Baseload to sell, MW</h2><div class="chart" id="hedge"></div></section>
       <section><h2>Hedged lifetime P&amp;L, €m</h2><div class="chart" id="pnl"></div></section>
-    </div>`;
+    </div>
+    <section><h2>Backtest, one-year ${state.tech} PPA bought each October, P&amp;L €m</h2>${table(
+      ["", "Unhedged", "Volume hedge", "Value hedge"],
+      [...bt.rows.map((r) => [r.year, r.open.toFixed(1), r.volume_hedge.toFixed(1), r.value_hedge.toFixed(1)]),
+        ["Volatility", bt.sd.open.toFixed(1), bt.sd.volume_hedge.toFixed(1), bt.sd.value_hedge.toFixed(1)]])}</section>`;
   bars($("hedge"), v.hedge.map((h) => ({ label: yy(h.year), value: h.mw, year: h.year })),
     { tipFmt: (d) => `Cal-${String(d.year).slice(2)} · ${d.value.toFixed(1)} MW` });
   histogram($("pnl"), v.pnl.edges, v.pnl.hedged, { xFmt: (x) => x.toFixed(0) });
 }
 
 function curve(el) {
-  const c = D.curve;
+  const c = D.curve, f = D.forwards;
   const start = new Date(c.daily.start);
   const day = (i) => new Date(start.getTime() + i * 864e5);
   const xs = c.daily.values.map((_, i) => i);
@@ -114,7 +119,24 @@ function curve(el) {
       <section><h2>Cal-${String(c.profile.year).slice(2)} day, €/MWh</h2><div class="chart" id="day"></div></section>
       <section><h2>Futures</h2>${table(["", "Quote", "Curve"],
         c.quotes.filter((q) => !q.extrapolated).map((q) => [q.contract, q.price.toFixed(2), q.model.toFixed(2)]))}</section>
+    </div>
+    <section><h2>Next calendar year since ${f.first.slice(0, 4)}, €/MWh</h2><div class="chart" id="history"></div></section>
+    <div class="grid">
+      <section><h2>Realised volatility by time to delivery</h2><div class="chart" id="term"></div></section>
+      <section><div class="stats">
+        ${stat(`Forward vol, last ${f.window_months} months`, pct(f.model_vol))}
+        ${stat("Next and third year correlation", f.corr_1_3.toFixed(2))}
+      </div></section>
     </div>`;
+  const hx = f.next_calendar.dates.map((_, i) => i);
+  const firstOfYear = hx.filter((i) => i && f.next_calendar.dates[i].slice(0, 4) !== f.next_calendar.dates[i - 1].slice(0, 4)
+    && +f.next_calendar.dates[i].slice(0, 4) % 2 === 0);
+  lines($("history"), hx, [{ name: "Next year", color: "var(--accent)", values: f.next_calendar.values }], {
+    height: 220, xTicks: firstOfYear,
+    xFmt: (i, tip) => (tip ? date(f.next_calendar.dates[i]) : f.next_calendar.dates[i].slice(0, 4)),
+    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
+  });
+  bars($("term"), f.term.map((b) => ({ label: b.bucket, value: b.vol })), { valueFmt: pct });
   lines($("hpfc"), xs, [{ name: "Curve", color: "var(--accent)", values: smooth }], {
     height: 240, xTicks: yearStarts, xFmt: (i, tip) => (tip ? date(day(i)) : day(i).getFullYear()),
     yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),

@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from . import capture, generation, hpfc, options, quality, simulate, valuation
+from . import capture, forwards, generation, hpfc, options, quality, simulate, valuation
 from .config import HISTORY_START, ROOT, Config, load
 from .dataset import Dataset
 from .hours import TZ, features, hours
@@ -51,6 +51,12 @@ def run(cfg: Config | None = None, log=print) -> dict:
             "projection": {str(y): fleet_rate(future[y]) for y in future},
         }
 
+    say("forwards")
+    fwd = forwards.summary(data.omip_history, cfg.valuation_date, cfg["forwards"]["vol_window_months"])
+    complete = [y for y in range(int(fwd["first"][:4]) + 1, cfg.valuation_date.year)]
+    fwd["backtest"] = {tech: forwards.hedge_backtest(data.omip_history, data.prices, data.generation, data.capacity,
+                                                     tech, complete, cfg["capacity_mw"]) for tech in TECHS}
+
     say("balancing")
     balancing = _balancing(data, cfg)
     rates = data.discount_curve
@@ -65,7 +71,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
             yields[tech][site] = stats
             pool = simulate.pool(data.prices, cf, cfg.window)
             sims = simulate.run(curve, shape, pool, cfg.years, np.array(stats["flh"]), cfg.valuation_date,
-                                cfg["capacity_mw"], cfg["risk"]["forward_vol"],
+                                cfg["capacity_mw"], fwd["model_vol"],
                                 cfg["yield"]["model_uncertainty"][tech], cfg["risk"]["paths"], cfg["risk"]["seed"])
             df = valuation.discount_factors(rates, np.array([y.tau for y in sims]))
             adj = valuation.cannibalisation_adj(sims, cannib[tech])
@@ -80,7 +86,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
     opts = {"spark": _spark(cfg), "battery": battery}
 
     say("quality")
-    checks = quality.run(data, curve, HISTORY_START)
+    checks = quality.run(data, curve, HISTORY_START, fwd)
 
     out = {
         "meta": {
@@ -94,11 +100,12 @@ def run(cfg: Config | None = None, log=print) -> dict:
             "futures_source": cfg["futures"]["source"],
             "built": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
             "sources": SOURCES,
-            "assumptions": _assumptions(cfg, rates),
+            "assumptions": _assumptions(cfg, rates, fwd),
         },
         "scenarios": scenarios,
         "yield": yields,
         "curve": _curve(curve, cfg),
+        "forwards": fwd,
         "capture": {"annual": _annual(annual), **capture_out},
         "balancing": {k: round(v, 2) for k, v in balancing.items()},
         "options": opts,
@@ -111,7 +118,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
 
 
 SOURCES = [
-    {"name": "OMIP", "use": "Phelix DE base futures", "url": "https://www.omip.pt/en/plazo-hoy"},
+    {"name": "OMIP", "use": "German base futures, daily since 2016", "url": "https://www.omip.pt/en/dados-mercado"},
     {"name": "Energy-Charts", "use": "Day-ahead prices, generation, forecasts, capacity",
      "url": "https://api.energy-charts.info"},
     {"name": "SMARD", "use": "Price and solar cross-check", "url": "https://www.smard.de"},
@@ -120,12 +127,12 @@ SOURCES = [
 ]
 
 
-def _assumptions(cfg: Config, rates: pd.Series) -> list[dict]:
+def _assumptions(cfg: Config, rates: pd.Series, fwd: dict) -> list[dict]:
     r, b = cfg["risk"], cfg["balancing"]
     lo, hi = cfg.window
     return [
         {"name": "Shape window", "value": f"{lo:%b %Y} – {hi:%b %Y}"},
-        {"name": "Forward vol", "value": f"{r['forward_vol']:.0%}"},
+        {"name": "Forward vol", "value": f"{fwd['model_vol']:.0%}, realised over {fwd['window_months']} months"},
         {"name": "Risk premium", "value": f"P{round(100 - 100 * r['volume_quantile'])} break-even"},
         {"name": "Imbalance spread", "value": f"€{b['imbalance_spread']:.0f}/MWh × {b['single_asset_factor']}"},
         {"name": "Discount rate, 5y", "value": f"{rates.loc[5]:.2%}"},
@@ -215,6 +222,7 @@ def memo(out: dict) -> str:
         v = out["scenarios"][tech][site][n - 1]
         y = out["yield"][tech][site]
         site_name = meta["sites"][site]
+        bt = out["forwards"]["backtest"][tech]
         steps = v["steps"]
         shape = steps["profile"] + steps["correlation"] + steps["cannibalisation"]
         hedge = v["hedge"]
@@ -233,7 +241,10 @@ def memo(out: dict) -> str:
             f"**Hedge:** sell {hedge[0]['mw']:.1f} MW of Cal-{hedge[0]['year'] % 100} baseload, stepping to "
             f"{hedge[-1]['mw']:.1f} MW by Cal-{hedge[-1]['year'] % 100}. The hedge cuts lifetime P&L "
             f"volatility from €{v['risk']['sd_open']:.1f}m to €{v['risk']['sd_hedged']:.1f}m; what remains is "
-            f"shape (€{v['risk']['sd_shape']:.1f}m) and volume (€{v['risk']['sd_volume']:.1f}m).",
+            f"shape (€{v['risk']['sd_shape']:.1f}m) and volume (€{v['risk']['sd_volume']:.1f}m). "
+            f"In history ({bt['rows'][0]['year']}–{bt['rows'][-1]['year']}), the same rule on a one-year {tech} PPA "
+            f"bought each October cut year-to-year P&L volatility from €{bt['sd']['open']:.1f}m to "
+            f"€{bt['sd']['value_hedge']:.1f}m, against €{bt['sd']['volume_hedge']:.1f}m for a volume hedge.",
             "",
             f"**Volume:** P50 {y['p50']:.0f} full-load hours, P90 {y['p90_1y']:.0f} over one year and "
             f"{y['p90_10y']:.0f} over ten (ERA5 {y['years'][0]}–{y['years'][-1]}).",
@@ -247,7 +258,9 @@ def memo(out: dict) -> str:
         "",
         f"- Curve: {meta['futures_source']}; flat beyond the last listed calendar year.",
         "- Shape: day-ahead prices over the 36 months before the valuation month.",
-        f"- {meta['paths']} joint price–weather paths; forward vol, imbalance spread and capacity build-out "
+        f"- Forward vol {out['forwards']['model_vol']:.0%}: realised on calendar contracts over the last "
+        f"{out['forwards']['window_months']} months of OMIP settlements (history since {out['forwards']['first']}).",
+        f"- {meta['paths']} joint price–weather paths; imbalance spread and capacity build-out "
         "as set in `inputs/market.toml`.",
         "",
         f"Built {meta['built']} from public data. Interactive version: `python -m ppa serve`.",
