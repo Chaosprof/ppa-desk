@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PPA Desk</title>
+  <meta name="description" content="Valuation and risk for German solar and wind PPAs.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235e6ad2'/%3E%3Cpath d='M7 21l6-7 5 4 7-9' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">PPA Desk</div>
+    <nav id="nav">
+      <a href="#price" data-view="price">Price</a>
+      <a href="#hedge" data-view="hedge">Hedge</a>
+      <a href="#curve" data-view="curve">Curve</a>
+      <a href="#capture" data-view="capture">Capture</a>
+      <a href="#options" data-view="options">Options</a>
+      <a href="#data" data-view="data">Data</a>
+    </nav>
+    <div class="asof" id="asof"></div>
+  </aside>
+  <main>
+    <header class="bar">
+      <h1 id="title"></h1>
+      <div class="controls" id="controls">
+        <div class="segmented" id="tech" role="radiogroup" aria-label="Technology"></div>
+        <div class="segmented" id="site" role="radiogroup" aria-label="Site"></div>
+        <label class="tenor">
+          <input type="range" id="tenor" min="1" max="10" step="1" aria-label="Tenor in years">
+          <output id="tenor-out"></output>
+        </label>
+      </div>
+    </header>
+    <div id="view"></div>
+  </main>
+  <div class="tip" id="tip" role="tooltip"></div>
+</body>
+</html>

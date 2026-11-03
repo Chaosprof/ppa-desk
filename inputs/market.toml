@@ -1,0 +1,100 @@
+# Market snapshot and modelling assumptions.
+# Everything the model believes that is not fetched from a public API lives here.
+
+valuation_date = 2026-10-30
+ppa_start = 2027-01-01
+max_tenor_years = 10
+capacity_mw = 100
+
+[futures]
+# Phelix DE baseload futures, EUR/MWh.
+# Source: OMIP "Market today", FDB-Germany, reference prices for 2026-10-30
+# https://www.omip.pt/en/plazo-hoy (retrieved 2026-11-03)
+source = "OMIP DE base reference prices, 2026-10-30"
+base = [
+  { contract = "Dec-26", price = 223.04 },
+  { contract = "Jan-27", price = 240.00 },
+  { contract = "Feb-27", price = 234.44 },
+  { contract = "Mar-27", price = 188.62 },
+  { contract = "Apr-27", price = 146.23 },
+  { contract = "Q1-27", price = 220.59 },
+  { contract = "Q2-27", price = 134.72 },
+  { contract = "Q3-27", price = 143.02 },
+  { contract = "Q4-27", price = 159.68 },
+  { contract = "Q1-28", price = 153.52 },
+  { contract = "Q2-28", price = 93.73 },
+  { contract = "Q3-28", price = 101.57 },
+  { contract = "Cal-27", price = 164.27 },
+  { contract = "Cal-28", price = 117.24 },
+  { contract = "Cal-29", price = 100.18 },
+  { contract = "Cal-30", price = 90.05 },
+  { contract = "Cal-31", price = 83.50 },
+  { contract = "Cal-32", price = 77.65 },
+  { contract = "Cal-33", price = 77.68 },
+]
+# Peakload quotes are optional; when absent the peak/base ratio comes from the historical shape.
+peak = []
+# Beyond the last listed calendar year the curve is held flat in nominal terms.
+
+[shape]
+# Hourly shape is learned from the trailing window of day-ahead prices before the valuation date.
+history_months = 36
+
+[spark]
+# Clean spark spread option on the front month. Gas and carbon are not on OMIP;
+# these are indicative and should be replaced with EEX/ICE settlements for the valuation date.
+contract = "Dec-26"
+power = 223.04               # OMIP DE base Dec-26, 2026-10-30
+gas = 88.41                  # ICE TTF front month, 2026-10-19 (press report), EUR/MWh
+carbon = 79.0                # EUA Dec-26, late May 2026 (press report), EUR/t
+heat_rate = 1.82             # MWh gas per MWh power (55% efficient CCGT)
+emission_factor = 0.37       # tCO2 per MWh power
+vom = 3.0                    # EUR/MWh
+vol = { power = 0.60, gas = 0.55, carbon = 0.40 }
+corr = { power_gas = 0.80, power_carbon = 0.45, gas_carbon = 0.35 }
+
+[risk]
+forward_vol = 0.30           # annualised vol of calendar baseload forwards (no free implied vols)
+volume_quantile = 0.10       # premium sized so the hedged deal breaks even at the P90 outcome
+paths = 800
+seed = 7
+
+[balancing]
+imbalance_spread = 20.0      # EUR per MWh of forecast error, |reBAP − day-ahead|
+single_asset_factor = 1.5    # single-site error vs the fleet, after pooling in a direct marketer's portfolio
+
+[yield]
+# Uncertainty beyond weather that an energy yield assessment adds, as a share of P50.
+model_uncertainty = { solar = 0.05, wind = 0.08 }
+
+[capacity]
+# Average installed GW (solar AC; wind onshore + offshore) per delivery year.
+# History comes from Energy-Charts; this path continues the 2025–26 build rate (~13 GW/yr solar),
+# below the EEG 2023 targets of 215 GW solar and 145 GW wind by 2030.
+solar = { 2027 = 127, 2028 = 140, 2029 = 153, 2030 = 166, 2031 = 178, 2032 = 190, 2033 = 201, 2034 = 212, 2035 = 222, 2036 = 232 }
+wind = { 2027 = 86, 2028 = 92, 2029 = 99, 2030 = 106, 2031 = 113, 2032 = 120, 2033 = 127, 2034 = 133, 2035 = 139, 2036 = 145 }
+
+[sites]
+north = { name = "North", lat = 54.48, lon = 9.05 }
+east = { name = "East", lat = 51.76, lon = 14.33 }
+south = { name = "South", lat = 48.54, lon = 12.15 }
+west = { name = "West", lat = 51.96, lon = 7.63 }
+
+[technology.solar]
+tilt = 25
+azimuth = 180
+dc_ac_ratio = 1.25
+losses = 0.14                # soiling, mismatch, wiring, inverter, availability
+temp_coeff = -0.0037
+irradiance_scale = 0.93      # ERA5 overstates surface irradiance over Germany by ~5–8%
+
+[technology.wind]
+hub_height = 135
+losses = 0.13
+# Generic modern onshore turbine, specific power ~ 280 W/m². Wind speed m/s -> share of rated power.
+power_curve = [
+  [0.0, 0.0], [3.0, 0.0], [3.5, 0.01], [4.0, 0.03], [4.5, 0.05], [5.0, 0.08], [5.5, 0.11],
+  [6.0, 0.15], [6.5, 0.20], [7.0, 0.26], [7.5, 0.33], [8.0, 0.41], [8.5, 0.50], [9.0, 0.59],
+  [9.5, 0.68], [10.0, 0.77], [10.5, 0.85], [11.0, 0.91], [11.5, 0.96], [12.0, 0.99],
+  [12.5, 1.0], [25.0, 1.0], [25.01, 0.0], [40.0, 0.0],
+]
