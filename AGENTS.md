@@ -38,3 +38,7 @@
 `site/` is plain ES modules with no build step. `app.js` holds state in the URL hash
 (`#price?tech=solar&site=south&tenor=10`) and renders one view per sidebar item. `charts.js` draws SVG. Adding a
 number to the site means adding it to `build.py` output first. Keep copy minimal: titles and numbers only.
+
+Design rules: three colours only (ink, muted, accent), no borders, dividers, containers, legends, grid lines, tags,
+italics, letter-spacing or section numbers. Charts are single lines or solid bars with names at the line ends. Sentence-case
+headings. If a view needs explanatory text, simplify the view instead.
