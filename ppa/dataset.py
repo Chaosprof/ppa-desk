@@ -44,6 +44,36 @@ class Dataset:
         return sources.omip_history(self.cfg["forwards"]["history_start"], self.cfg.valuation_date)
 
     @cached_property
+    def mix(self) -> pd.DataFrame:
+        return sources.mix(HISTORY_START, self.cfg.history_end)
+
+    @cached_property
+    def da_forecasts(self) -> pd.DataFrame:
+        return sources.forecasts(HISTORY_START, self.cfg.history_end)
+
+    @cached_property
+    def installed(self) -> pd.DataFrame:
+        return sources.installed()
+
+    @cached_property
+    def eua(self) -> pd.Series:
+        return sources.eua(self.cfg.history_end)
+
+    @cached_property
+    def fuels(self) -> dict[str, pd.Series]:
+        """Monthly IMF prices via FRED: TTF gas USD/MMBtu, Newcastle coal USD/t, Brent USD/bbl; daily USD per EUR."""
+        ids = {"gas": "PNGASEUUSDM", "coal": "PCOALAUUSDM", "oil": "POILBREUSDM", "usd": "DEXUSEU"}
+        return {k: sources.fred(v, self.cfg.history_end) for k, v in ids.items()}
+
+    @cached_property
+    def neighbours(self) -> pd.DataFrame:
+        return sources.neighbour_residual(HISTORY_START, self.cfg.history_end)
+
+    @cached_property
+    def plants(self) -> pd.DataFrame:
+        return sources.plants()
+
+    @cached_property
     def discount_curve(self) -> pd.Series:
         return sources.discount_curve(self.cfg.valuation_date)
 
@@ -52,8 +82,8 @@ class Dataset:
         return sources.weather(site, s["lat"], s["lon"], WEATHER_START, self.cfg.history_end)
 
     def fetch_all(self, log=print) -> None:
-        for name in ["prices", "generation", "capacity", "forecasts", "smard_prices", "smard_solar",
-                     "discount_curve", "omip_history"]:
+        for name in ["prices", "generation", "capacity", "forecasts", "smard_prices", "smard_solar", "discount_curve",
+                     "omip_history", "mix", "da_forecasts", "installed", "eua", "fuels", "neighbours", "plants"]:
             log(f"fetch {name}")
             getattr(self, name)
         for site in self.cfg.sites:

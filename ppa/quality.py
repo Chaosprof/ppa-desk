@@ -22,7 +22,7 @@ def _row(check: str, value: str, ok: bool) -> dict:
     return {"check": check, "value": value, "ok": bool(ok)}
 
 
-def run(data: Dataset, curve: Curve, start: dt.date, fwd: dict) -> list[dict]:
+def run(data: Dataset, curve: Curve, start: dt.date, fwd: dict, fund: dict) -> list[dict]:
     cfg = data.cfg
     rows = []
 
@@ -80,6 +80,12 @@ def run(data: Dataset, curve: Curve, start: dt.date, fwd: dict) -> list[dict]:
     rows.append(_row("Futures inputs vs OMIP history", f"{len(diffs)} matched, largest gap {max(diffs, default=0):.2f}",
                      len(diffs) > 0 and max(diffs) < 0.005))
     rows.append(_row("OMIP settlement days", f"{fwd['days']:,} since {fwd['first']}", fwd["days"] > 2000))
+
+    y = next(r for r in fund["years"] if r["year"] == fund["day"]["year"])
+    rows.append(_row(f"Fundamental model {y['year']}, hourly error vs month-mean",
+                     f"{y['mae']:.1f} vs {y['month_mean_mae']:.1f} €/MWh", y["mae"] < y["month_mean_mae"]))
+    eua = data.eua
+    rows.append(_row("EUA auction days", f"{len(eua):,} since {eua.index.min():%Y}", len(eua) > 2500))
 
     for site in cfg.sites:
         w = data.weather(site)

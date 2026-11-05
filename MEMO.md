@@ -49,4 +49,8 @@
 - Forward vol 21%: realised on calendar contracts over the last 24 months of OMIP settlements (history since 2016-06-01).
 - 800 joint price–weather paths; imbalance spread and capacity build-out as set in `inputs/market.toml`.
 
-Built 2026-11-05T06:08:03+00:00 from public data. Interactive version: `python -m ppa serve`.
+## Fundamental model
+
+An hourly merit order of the German market, built only from public data and fitted on the 3 years before each test year. In 2025 it averaged €86/MWh against €89 actual, missed hourly prices by €23 on average (knowing each month's actual average would miss by €35), and put the solar capture rate at 0.54 against 0.52.
+
+Built 2026-11-05T07:28:06+00:00 from public data. Interactive version: `python -m ppa serve`.

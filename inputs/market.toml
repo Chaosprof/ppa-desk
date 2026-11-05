@@ -41,12 +41,12 @@ peak = []
 history_months = 36
 
 [spark]
-# Clean spark spread option on the front month. Gas and carbon are not on OMIP;
-# these are indicative and should be replaced with EEX/ICE settlements for the valuation date.
+# Clean spark spread option on the front month. Gas and carbon are not on OMIP. Carbon is the EEX
+# primary auction price (free, daily); gas is indicative and should be replaced with an ICE TTF settlement.
 contract = "Dec-26"
 power = 223.04               # OMIP DE base Dec-26, 2026-10-30
 gas = 88.41                  # ICE TTF front month, 2026-10-19 (press report), EUR/MWh
-carbon = 79.0                # EUA Dec-26, late May 2026 (press report), EUR/t
+carbon = 88.05               # EUA, EEX primary auction clearing price, 2026-10-29, EUR/t
 heat_rate = 1.82             # MWh gas per MWh power (55% efficient CCGT)
 emission_factor = 0.37       # tCO2 per MWh power
 vom = 3.0                    # EUR/MWh
@@ -58,6 +58,17 @@ corr = { power_gas = 0.80, power_carbon = 0.45, gas_carbon = 0.35 }
 # realised vol of calendar contracts up to three years out over the trailing window (no free implied vols).
 history_start = 2016-06-01
 vol_window_months = 24
+
+[fundamental]
+# Hourly merit-order model of the German day-ahead price (ppa/fundamental.py), fitted on public data.
+train_years = 3              # each backtest year is fitted on the three years before it
+first_test_year = 2019
+lignite_fuel = 5.0           # EUR/MWh thermal, mine-mouth; lignite is not traded
+emissions = { lignite = 0.40, coal = 0.34, gas = 0.20, oil = 0.27 }   # tCO2 per MWh thermal
+vom = { lignite = 4.0, coal = 4.0, gas = 2.0, oil = 3.0 }             # EUR/MWh electric
+pumped_hours = 6.0           # hours of full-power storage in German pumped hydro
+pumped_efficiency = 0.75
+demand_response = { mw = 5000.0, price = 500.0, spread = 150.0 }   # load that backs off at scarcity prices
 
 [risk]
 volume_quantile = 0.10       # premium sized so the hedged deal breaks even at the P90 outcome

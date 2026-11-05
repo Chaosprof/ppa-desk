@@ -13,7 +13,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest
 ```
 
-The first build downloads about 11 years of hourly market data, 21 years of ERA5 weather for four sites and ten years of daily OMIP futures settlements. Energy-Charts rate-limits and OMIP is fetched at one page a second, so this takes a little over an hour. Later builds take about 20 seconds.
+The first build downloads about 11 years of hourly market data (for Germany and its ten neighbours), 21 years of ERA5 weather for four sites and ten years of daily OMIP futures settlements. Energy-Charts rate-limits and OMIP is fetched at one page a second, so this takes a little over an hour. Later builds take about 20 seconds.
 
 ## Method
 
@@ -54,6 +54,21 @@ Daily OMIP settlements for every German base month, quarter and calendar contrac
 - **One-factor check:** the correlation between next-year and third-year daily returns, which tests the simulation's single level factor.
 - **Hedge backtest:** a one-year PPA on the German fleet profile, bought each October from 2017 at the Cal forward times the trailing capture rate, held unhedged, with a volume hedge, and with the dashboard's value hedge.
 
+**Fundamental model** — [`fundamental.py`](ppa/fundamental.py)
+An hourly merit order of the German day-ahead market, built only from free data. Every hour, demand served by the public grid clears against:
+- **Must-take supply:** nuclear, hydro, biomass and waste as observed, plus the day-ahead wind and solar forecast, which curtails at negative prices.
+- **Thermal plants:** lignite, hard coal, gas and oil. A must-run part (heat-led CHP, inflexible units) runs at any price. The flexible rest bids fuel plus carbon over efficiency, spread across the real fleet's efficiencies and blurred by a fitted bid noise.
+- **Trade:** net imports, linear in German demand, the wind forecast and the solar forecast, and in the residual load of all ten neighbours. A bounded response to the German price around a gas plant's cost sits on top.
+- **Storage:** pumped hydro charges in each day's cheapest hours and discharges in its dearest.
+
+Availability and must-run are read from observed dispatch, and the trade function is fitted on observed trade and prices. Eight behavioural parameters (a markup per fuel, bid noise, curtailment) are then fitted by clearing the market against prices and generation by fuel together. Each test year is predicted by a model fitted only on the three years before it, with that year's actual fuel prices, carbon, demand, weather and capacity.
+
+The bar to clear is the hourly error of knowing each month's actual average price in advance. Out of sample, the model beats it in every year from 2019 to 2026: for example €19 against €32 in 2023, €23 against €35 in 2025, and €57 against €80 in the 2022 crisis. In 2025 it put the solar capture rate at 0.54 against 0.52 actual. Two findings shaped it:
+- **Trade has to see the neighbours.** Germany's net position swung by about 5 GW between 2022 and 2024 as French nuclear recovered. Trade fitted on German conditions alone priced 2024 €36 too high; adding the ten neighbours' residual load brought it to within €10.
+- **Exports saturate at sunny middays,** because the neighbours have solar too. A price response that let exports keep growing put 2025 midday prices at €92 against €46.
+
+The model still produces about twice as many negative hours as the market, though too shallow, and it understates the evening peak (2025: €115 against €136 at 19:00).
+
 **Data quality** — [`quality.py`](ppa/quality.py)
 The checks cover:
 - Coverage and gaps in the price history.
@@ -73,11 +88,13 @@ Everything the model believes that is not fetched lives in [`inputs/market.toml`
 ## Limits
 
 - **No free implied vols:** forward vol is realised, from OMIP settlements. OMIP shows no trading in German contracts, so its prices are reference marks that track EEX, not trade prints.
-- **Spark-spread gas and carbon:** indicative press quotes; replace them with EEX/ICE settlements for the valuation date.
+- **Spark-spread gas:** an indicative press quote; replace it with an ICE TTF settlement for the valuation date. Carbon is EEX's auction price.
 - **No peak quotes:** the peak/base ratio comes from the historical shape. The solver honours peak quotes when they are given.
 - **Balancing:** fleet day-ahead forecast error × single-site factor × an assumed imbalance spread, because reBAP needs registration.
 - **15-minute day-ahead products (since Oct 2025):** averaged to hourly.
 - **Price levels:** one factor moves all calendar years together.
+- **Fundamental model fuel prices:** gas, coal and oil are IMF monthly averages (free daily TTF and API2 are licensed), and coal is Newcastle rather than the Rotterdam API2 that German plants pay. Within-month swings, as in August 2022, are missed.
+- **Fundamental model scope:** one German node with a fitted trade function, not a European dispatch. Intertemporal constraints (start-up costs, ramping) show up only as must-run and bid noise.
 - **Clause and cannibalisation overlap:** the projected capture-rate drop applies to positive-price volume, while simulated negative hours stay at today's frequency. Part of the future drop comes from more negative hours, which the clause excludes, so some overlap is likely.
 
 ## Layout

@@ -12,7 +12,8 @@
 ## Flow
 
 `inputs/market.toml` → `config.py` → `sources.py` (HTTP + parquet cache in `data/`) → `dataset.py` →
-`hpfc.py`, `generation.py`, `capture.py`, `forwards.py` → `simulate.py` → `valuation.py`, `options.py`, `quality.py` →
+`hpfc.py`, `generation.py`, `capture.py`, `forwards.py`, `fundamental.py` → `simulate.py` → `valuation.py`, `options.py`,
+`quality.py` →
 `build.py` writes `site/data.json` (the only contract with the front end) and `MEMO.md`.
 
 ## Conventions
@@ -23,6 +24,8 @@
 - `Shape` is sign-split: `level * up - down`. Positive prices scale with the level, negative ones do not.
 - Simulated prices must stay unbiased against the curve (`E[P_h] = F_h`). Decomposition steps must sum to the price.
 - Assumptions belong in `inputs/market.toml`, not in code.
+- `fundamental.py` caches its backtest in `data/` keyed on its config and `VERSION`; bump `VERSION` when the model
+  changes.
 
 ## Invariants guarded by tests
 
@@ -33,6 +36,9 @@
 - The valuation decomposition adds up, and the hedge cuts risk.
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
+- The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage
+  never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses.
+  The trade fit recovers a known response. EEX carbon reports parse whatever their yearly layout.
 
 ## Front end
 

@@ -1,16 +1,21 @@
 """Public data sources, each cached as parquet under data/.
 
-Energy-Charts (Fraunhofer ISE) for day-ahead prices, generation, forecasts and installed capacity;
-SMARD (Bundesnetzagentur) as an independent cross-check; Open-Meteo ERA5 for site weather;
-ECB for the euro discount curve; OMIP for daily German futures reference prices. No API keys are needed.
+Energy-Charts (Fraunhofer ISE) for day-ahead prices, generation by fuel, cross-border trade, forecasts
+and installed capacity; SMARD (Bundesnetzagentur) as an independent cross-check; Open-Meteo ERA5 for
+site weather; ECB for the euro discount curve; OMIP for daily German futures reference prices; EEX for
+EU carbon auction prices; FRED (IMF) for monthly gas, coal and oil prices; Open Power System Data for
+the German plant list with efficiencies. No API keys are needed.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import html
+import io
 import re
 import time
+import warnings
+import zipfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -24,10 +29,29 @@ SMARD = "https://www.smard.de/app/chart_data"
 OPEN_METEO = "https://archive-api.open-meteo.com/v1/archive"
 ECB = "https://data-api.ecb.europa.eu/service/data/YC"
 OMIP = "https://www.omip.pt/en/dados-mercado"
+FRED = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+EEX_ARCHIVE = ("https://www.eex.com/fileadmin/EEX/Downloads/Markets/Environmentals/"
+               "EUA_Emission_Spot_Primary_Market_Auction_Report/Archive_Reports/"
+               "emission-spot-primary-market-auction-report-2012-2025-data.zip")
+EEX_YEAR = "https://public.eex-group.com/eex/eua-auction-report/emission-spot-primary-market-auction-report-{}-data.xlsx"
+OPSD = "https://data.open-power-system-data.org/conventional_power_plants/2020-10-01/conventional_power_plants_DE.csv"
 
 DE_LU_START = dt.date(2018, 10, 1)  # DE-AT-LU split into DE-LU and AT
 GENERATION = {"Solar": "solar", "Wind onshore": "wind_onshore", "Wind offshore": "wind_offshore", "Load": "load"}
 CAPACITY = {"Solar AC": "solar", "Wind onshore": "wind_onshore", "Wind offshore": "wind_offshore"}
+MIX = {
+    "Nuclear": "nuclear", "Fossil brown coal / lignite": "lignite", "Fossil hard coal": "coal", "Fossil gas": "gas",
+    "Fossil oil": "oil", "Fossil coal-derived gas": "coal_gas", "Biomass": "biomass", "Hydro Run-of-River": "ror",
+    "Hydro water reservoir": "reservoir", "Hydro pumped storage": "pumped", "Hydro pumped storage consumption":
+    "pumping", "Geothermal": "geothermal", "Waste": "waste", "Others": "others", "Wind offshore": "wind_offshore",
+    "Wind onshore": "wind_onshore", "Solar": "solar", "Load": "load", "Cross border electricity trading": "trade",
+}
+INSTALLED = {
+    "Nuclear": "nuclear", "Fossil brown coal / lignite": "lignite", "Fossil hard coal": "coal", "Fossil gas": "gas",
+    "Fossil oil": "oil", "Hydro pumped storage": "pumped", "Battery storage (power)": "battery",
+    "Battery storage (capacity)": "battery_gwh", "Biomass": "biomass", "Solar AC": "solar",
+    "Wind onshore": "wind_onshore", "Wind offshore": "wind_offshore",
+}
 
 
 def _get(url: str, params: dict | None = None) -> requests.Response:
@@ -131,6 +155,64 @@ def generation(start: dt.date, end: dt.date) -> pd.DataFrame:
     return _cached(f"generation_{start}_{end}", build)
 
 
+def _ec_mix(span: tuple[dt.date, dt.date]) -> pd.DataFrame:
+    lo, hi = span
+
+    def build():
+        params = {"country": "de", "start": lo.isoformat(), "end": hi.isoformat()}
+        d = _get(f"{ENERGY_CHARTS}/public_power", params).json()
+        idx = pd.to_datetime(d["unix_seconds"], unit="s", utc=True)
+        cols = {MIX[p["name"]]: p["data"] for p in d["production_types"] if p["name"] in MIX}
+        return pd.DataFrame(cols, index=idx, dtype=float)
+
+    return _cached(f"chunks/mix_{lo}_{hi}", build)
+
+
+NEIGHBOURS = ["fr", "nl", "be", "at", "ch", "cz", "pl", "dk", "se", "no"]
+CLEAN = ["Nuclear", "Hydro Run-of-River", "Hydro water reservoir", "Biomass", "Geothermal", "Wind onshore",
+         "Wind offshore", "Solar"]
+
+
+def _ec_residual(args) -> pd.Series:
+    country, (lo, hi) = args
+
+    def build():
+        params = {"country": country, "start": lo.isoformat(), "end": hi.isoformat()}
+        d = _get(f"{ENERGY_CHARTS}/public_power", params).json()
+        idx = pd.to_datetime(d["unix_seconds"], unit="s", utc=True)
+        kinds = {p["name"]: pd.Series(p["data"], index=idx, dtype=float) for p in d["production_types"]}
+        clean = sum(kinds[k].fillna(0.0) for k in CLEAN if k in kinds)
+        return (kinds["Load"] - clean).rename("residual")
+
+    return _cached(f"chunks/residual_{country}_{lo}_{hi}", build)["residual"]
+
+
+def neighbour_residual(start: dt.date, end: dt.date) -> pd.DataFrame:
+    """Hourly residual load of each neighbour, MW: load less nuclear, hydro, biomass, wind and solar.
+
+    What is left has to come from fossil plants or imports, so it measures how much a neighbour needs.
+    """
+
+    def build():
+        cols = {}
+        for c in NEIGHBOURS:
+            parts = _parallel(_ec_residual, [(c, q) for q in _years(start, end)])
+            cols[c] = _to_hourly(pd.concat(parts).sort_index())
+        return pd.DataFrame(cols)
+
+    return _cached(f"neighbours_{start}_{end}", build)
+
+
+def mix(start: dt.date, end: dt.date) -> pd.DataFrame:
+    """Hourly German public net generation by fuel, load and net trade, MW. Exports and pumping are negative."""
+
+    def build():
+        frame = pd.concat(_parallel(_ec_mix, _years(start, end))).sort_index()
+        return _to_hourly(frame)
+
+    return _cached(f"mix_{start}_{end}", build)
+
+
 def _ec_forecast(args) -> pd.Series:
     kind, (lo, hi) = args
 
@@ -169,6 +251,33 @@ def capacity() -> pd.DataFrame:
         return pd.DataFrame(cols, index=idx, dtype=float).dropna(how="all")
 
     return _cached("capacity", build)
+
+
+def _ec_installed(step: str, fmt: str) -> pd.DataFrame:
+    params = {"country": "de", "time_step": step, "installation_decommission": "false"}
+    d = _get(f"{ENERGY_CHARTS}/installed_power", params).json()
+    idx = pd.to_datetime(d["time"], format=fmt)
+    cols = {INSTALLED[p["name"]]: p["data"] for p in d["production_types"] if p["name"] in INSTALLED}
+    return pd.DataFrame(cols, index=idx, dtype=float).dropna(how="all")
+
+
+def installed() -> pd.DataFrame:
+    """Installed German capacity by technology at each month start, GW (battery_gwh in GWh).
+
+    Renewables and batteries are published monthly; thermal plants only as year-end values, which are
+    interpolated linearly through the year.
+    """
+
+    def build():
+        monthly = _ec_installed("monthly", "%m.%Y")
+        yearly = _ec_installed("yearly", "%Y")
+        yearly.index = yearly.index + pd.offsets.YearEnd(0) + pd.Timedelta(days=1)  # value at year end
+        thermal = yearly[[c for c in yearly if c not in monthly]].dropna(how="all")
+        months = pd.date_range(thermal.index[0], monthly.index[-1], freq="MS")
+        thermal = thermal.reindex(thermal.index.union(months)).interpolate("time").reindex(months).ffill()
+        return monthly.join(thermal, how="left")
+
+    return _cached("installed", build)
 
 
 # --- SMARD ---------------------------------------------------------------------------------------
@@ -246,6 +355,60 @@ def discount_curve(on: dt.date) -> pd.Series:
         return pd.Series(out, name="rate")
 
     return _cached(f"ecb_{on}", build)["rate"]
+
+
+# --- Fuels, carbon and plants ---------------------------------------------------------------------
+
+
+def fred(series: str, end: dt.date) -> pd.Series:
+    """A FRED series up to `end` (IMF monthly commodity prices in USD; DEXUSEU in USD per EUR)."""
+
+    def build():
+        text = _get(FRED, {"id": series}).text
+        frame = pd.read_csv(io.StringIO(text), index_col=0, parse_dates=True, na_values=".")
+        return frame.iloc[:, 0].loc[: pd.Timestamp(end)].dropna().rename("value")
+
+    return _cached(f"fred_{series}_{end}", build)["value"]
+
+
+def _eua_sheet(content: bytes) -> pd.Series:
+    """Auction clearing prices from one EEX yearly report, whatever its layout that year."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sheet = pd.read_excel(io.BytesIO(content), header=None)
+    text = sheet.astype(str).where(sheet.notna(), "")
+    row = text.index[text.apply(lambda r: r.str.strip().eq("Date").any(), axis=1)][0]
+    names = text.iloc[row].str.strip().tolist()
+    price = next(i for i, n in enumerate(names) if n.startswith("Auction Price"))
+    body = sheet.iloc[row + 1:]
+    s = pd.Series(pd.to_numeric(body.iloc[:, price], errors="coerce").to_numpy(),
+                  index=pd.to_datetime(body.iloc[:, names.index("Date")], errors="coerce").dt.normalize())
+    return s[s.index.notna()].dropna()
+
+
+def eua(end: dt.date) -> pd.Series:
+    """Daily EU carbon price, EUR/t: the mean clearing price of that day's EEX primary auctions."""
+
+    def build():
+        with zipfile.ZipFile(io.BytesIO(_get(EEX_ARCHIVE).content)) as z:
+            parts = [_eua_sheet(z.read(n)) for n in z.namelist() if n.endswith((".xls", ".xlsx"))]
+        parts += [_eua_sheet(_get(EEX_YEAR.format(y)).content) for y in range(2026, end.year + 1)]
+        s = pd.concat(parts)
+        return s[s.index <= pd.Timestamp(end)].groupby(level=0).mean().rename("eua")
+
+    return _cached(f"eua_{end}", build)["eua"]
+
+
+def plants() -> pd.DataFrame:
+    """German conventional plant list (BNetzA/UBA via Open Power System Data, 2020) with efficiencies."""
+
+    def build():
+        frame = pd.read_csv(io.StringIO(_get(OPSD).text), low_memory=False)
+        keep = ["id", "name_bnetza", "capacity_net_bnetza", "energy_source", "technology", "chp", "commissioned",
+                "status", "efficiency_data", "efficiency_estimate"]
+        return frame[keep]
+
+    return _cached("opsd_plants", build)
 
 
 # --- OMIP ----------------------------------------------------------------------------------------

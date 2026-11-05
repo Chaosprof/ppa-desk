@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import time
 
 import numpy as np
 import pandas as pd
 
-from . import capture, forwards, generation, hpfc, options, quality, simulate, valuation
+from . import capture, forwards, fundamental, generation, hpfc, options, quality, simulate, sources, valuation
 from .config import HISTORY_START, ROOT, Config, load
 from .dataset import Dataset
 from .hours import TZ, features, hours
@@ -57,6 +58,9 @@ def run(cfg: Config | None = None, log=print) -> dict:
     fwd["backtest"] = {tech: forwards.hedge_backtest(data.omip_history, data.prices, data.generation, data.capacity,
                                                      tech, complete, cfg["capacity_mw"]) for tech in TECHS}
 
+    say("fundamental")
+    fund = _fundamental(data, cfg)
+
     say("balancing")
     balancing = _balancing(data, cfg)
     rates = data.discount_curve
@@ -86,7 +90,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
     opts = {"spark": _spark(cfg), "battery": battery}
 
     say("quality")
-    checks = quality.run(data, curve, HISTORY_START, fwd)
+    checks = quality.run(data, curve, HISTORY_START, fwd, fund)
 
     out = {
         "meta": {
@@ -109,6 +113,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
         "capture": {"annual": _annual(annual), **capture_out},
         "balancing": {k: round(v, 2) for k, v in balancing.items()},
         "options": opts,
+        "fundamental": fund,
         "quality": checks,
     }
     (ROOT / "site" / "data.json").write_text(json.dumps(out, separators=(",", ":"), allow_nan=False))
@@ -119,8 +124,13 @@ def run(cfg: Config | None = None, log=print) -> dict:
 
 SOURCES = [
     {"name": "OMIP", "use": "German base futures, daily since 2016", "url": "https://www.omip.pt/en/dados-mercado"},
-    {"name": "Energy-Charts", "use": "Day-ahead prices, generation, forecasts, capacity",
+    {"name": "Energy-Charts", "use": "Day-ahead prices, generation by fuel, trade, forecasts, capacity, neighbours",
      "url": "https://api.energy-charts.info"},
+    {"name": "EEX", "use": "EU carbon auction prices since 2012",
+     "url": "https://www.eex.com/en/market-data/environmentals/eu-ets-auctions"},
+    {"name": "FRED", "use": "IMF monthly gas, coal and oil prices; USD/EUR", "url": "https://fred.stlouisfed.org"},
+    {"name": "Open Power System Data", "use": "German plant list with efficiencies",
+     "url": "https://data.open-power-system-data.org/conventional_power_plants/"},
     {"name": "SMARD", "use": "Price and solar cross-check", "url": "https://www.smard.de"},
     {"name": "Open-Meteo ERA5", "use": "Site weather 2005–2026", "url": "https://open-meteo.com/en/docs/historical-weather-api"},
     {"name": "ECB", "use": "AAA euro discount curve", "url": "https://data.ecb.europa.eu"},
@@ -140,6 +150,29 @@ def _assumptions(cfg: Config, rates: pd.Series, fwd: dict) -> list[dict]:
         {"name": "Wind 2030", "value": f"{cfg['capacity']['wind']['2030']} GW"},
         {"name": "Paths", "value": f"{r['paths']}"},
     ]
+
+
+def _fundamental(data: Dataset, cfg: Config) -> dict:
+    """Merit-order backtest: each year predicted from a fit on the years before it. Cached; fitting takes a minute."""
+    fc = cfg["fundamental"]
+    x = fundamental.inputs(data.mix, data.da_forecasts, data.prices, data.installed, data.fuels, data.eua,
+                           data.neighbours, fc)
+    key = hashlib.sha1(json.dumps([fc, fundamental.VERSION], sort_keys=True, default=str).encode()).hexdigest()[:10]
+    model = sources._cached(f"fundamental_{cfg.history_end}_{key}",
+                            lambda: fundamental.backtest(x, fundamental.efficiencies(data.plants), fc)[0])["model"]
+    m = fundamental.metrics(x, model)
+    d = x.loc[model.index, ["price"]].assign(model=model)
+    local = d.index.tz_convert(TZ)
+    monthly = d.groupby(local.strftime("%Y-%m"))[["price", "model"]].mean()
+    full = int(max(y for y, g in d.groupby(local.year) if len(g) > 8700))
+    day = d[local.year == full].groupby(local[local.year == full].hour)[["price", "model"]].mean()
+    return {
+        "train_years": fc["train_years"],
+        "years": [{"year": int(y), **{k: round(float(v), 3) for k, v in r.items()}} for y, r in m.iterrows()],
+        "monthly": {"months": monthly.index.tolist(), "actual": monthly["price"].round(2).tolist(),
+                    "model": monthly["model"].round(2).tolist()},
+        "day": {"year": full, "actual": day["price"].round(2).tolist(), "model": day["model"].round(2).tolist()},
+    }
 
 
 def _balancing(data: Dataset, cfg: Config) -> dict[str, float]:
@@ -269,7 +302,22 @@ def memo(out: dict) -> str:
         f"- {meta['paths']} joint price–weather paths; imbalance spread and capacity build-out "
         "as set in `inputs/market.toml`.",
         "",
+        *_memo_fundamental(out["fundamental"]),
+        "",
         f"Built {meta['built']} from public data. Interactive version: `python -m ppa serve`.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _memo_fundamental(f: dict) -> list[str]:
+    y = next(r for r in f["years"] if r["year"] == f["day"]["year"])
+    return [
+        "## Fundamental model",
+        "",
+        f"An hourly merit order of the German market, built only from public data and fitted on the "
+        f"{f['train_years']} years before each test year. In {y['year']} it averaged €{y['model']:.0f}/MWh against "
+        f"€{y['price']:.0f} actual, missed hourly prices by €{y['mae']:.0f} on average (knowing each month's actual "
+        f"average would miss by €{y['month_mean_mae']:.0f}), and put the solar capture rate at "
+        f"{y['solar_capture_model']:.2f} against {y['solar_capture']:.2f}.",
+    ]

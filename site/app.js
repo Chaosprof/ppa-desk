@@ -51,6 +51,7 @@ const VIEWS = {
   hedge: { title: "Hedge", controls: true, render: hedge },
   curve: { title: "Curve", render: curve },
   capture: { title: "Capture", render: capture },
+  fundamentals: { title: "Fundamentals", render: fundamentals },
   options: { title: "Options", controls: true, render: options },
   data: { title: "Data", render: data },
 };
@@ -202,6 +203,34 @@ function capture(el) {
     { name: "Model", color: "var(--accent)", values: bt.predicted },
   ], { height: 180, yFmt: (y) => y.toFixed(1), xFmt: (i, tip) => (tip ? bt.months[i] : bt.months[i].slice(0, 4)),
     xTicks: btX.filter((i) => bt.months[i].endsWith("-01") && +bt.months[i].slice(0, 4) % 2 === 1) });
+}
+
+function fundamentals(el) {
+  const f = D.fundamental, m = f.monthly;
+  const mx = m.months.map((_, i) => i);
+  const hours = [...Array(24).keys()];
+  el.innerHTML = `
+    <section><h2>Monthly price, €/MWh</h2><div class="chart" id="fmonthly"></div></section>
+    <div class="grid">
+      <section><h2>Average day, ${f.day.year}, €/MWh</h2><div class="chart" id="fday"></div></section>
+      <section><h2>Solar capture and negative hours</h2>${table(["", "Capture", "Model", "Negative", "Model"],
+        f.years.map((r) => [r.year, r.solar_capture.toFixed(2), r.solar_capture_model.toFixed(2),
+          r.negative_hours, r.negative_hours_model]))}</section>
+    </div>
+    <section><h2>Each year fitted on the ${f.train_years} before it, €/MWh</h2>${table(
+      ["", "Actual", "Model", "Hourly error", "Month-mean error"],
+      f.years.map((r) => [r.year, r.price.toFixed(1), r.model.toFixed(1), r.mae.toFixed(1), r.month_mean_mae.toFixed(1)]))}
+    </section>`;
+  lines($("fmonthly"), mx, [
+    { name: "Actual", color: "var(--ink)", values: m.actual },
+    { name: "Model", color: "var(--accent)", values: m.model },
+  ], { height: 240, xTicks: mx.filter((i) => m.months[i].endsWith("-01") && +m.months[i].slice(0, 4) % 2 === 1),
+    xFmt: (i, tip) => (tip ? m.months[i] : m.months[i].slice(0, 4)), yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)) });
+  lines($("fday"), hours, [
+    { name: "Actual", color: "var(--ink)", values: f.day.actual },
+    { name: "Model", color: "var(--accent)", values: f.day.model },
+  ], { height: 180, xTicks: [0, 6, 12, 18, 23], xFmt: (h) => `${String(h).padStart(2, "0")}:00`,
+    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)) });
 }
 
 function options(el) {
