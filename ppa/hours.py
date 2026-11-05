@@ -46,6 +46,8 @@ def features(idx: pd.DatetimeIndex) -> pd.DataFrame:
             # Phelix DE peak: Monday–Friday 08:00–20:00 local, holidays included.
             "peak": (weekday < 5) & (local.hour >= 8) & (local.hour < 20),
             "date": date,
+            # Months since mid-January, periodic in [0, 12): each month spans one unit centred on its middle.
+            "season": (local.month - 1 + (local.day - 0.5) / local.days_in_month - 0.5) % 12,
         },
         index=idx,
     )

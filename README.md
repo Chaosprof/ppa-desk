@@ -18,7 +18,7 @@ The first build downloads about 11 years of hourly market data, 21 years of ERA5
 ## Method
 
 **Hourly forward curve** — [`hpfc.py`](ppa/hpfc.py)
-OMIP Phelix DE base futures for 30 Oct 2026 (Dec-26 through Cal-33) are turned into an hourly curve. A seasonal prior (month × day type × hour, learned from the last 36 months of day-ahead prices) gets a daily correction that minimises squared second differences. This is a discrete smoothing spline in the spirit of Benth, Koekebakker and Ollmar. The correction is constrained so every quoted future reprices exactly. Quotes that finer contracts already imply (Q1-27, Cal-27) are detected by rank, then checked rather than imposed. Beyond Cal-33 the curve is flat in nominal terms.
+OMIP Phelix DE base futures for 30 Oct 2026 (Dec-26 through Cal-33) are turned into an hourly curve. A seasonal prior (month × day type × hour, learned from the last 36 months of day-ahead prices, blended linearly between mid-month points so it has no steps at month or year boundaries) gets a daily correction that minimises squared second differences. This is a discrete smoothing spline in the spirit of Benth, Koekebakker and Ollmar. The correction is constrained so every quoted future reprices exactly. Quotes that finer contracts already imply (Q1-27, Cal-27) are detected by rank, then checked rather than imposed. Beyond Cal-33 the curve is flat in nominal terms.
 
 The shape is sign-split. Positive prices scale with the forward level, while negative prices stay in €/MWh. Negative prices are set by renewable support and must-run, not by gas, so a purely multiplicative shape made Cal-27 (€164) show −€131 hours. The split brings those back to the historical depth.
 

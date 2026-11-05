@@ -191,8 +191,14 @@ def _curve(curve: hpfc.Curve, cfg: Config) -> dict:
     cal = f["year"] == cfg.years[0]
     heat = h[cal.to_numpy()].groupby([f.loc[cal, "month"], f.loc[cal, "hour"]]).mean().unstack()
     last_quote = max(q.period[1] for q in curve.quotes if not q.extrapolated)
+    # Local date x local hour: the repeated hour of a 25-hour day is averaged, the skipped one of a 23-hour day is null.
+    tenor = (f["year"] >= cfg.years[0]) & (f["year"] <= cfg.years[-1])
+    grid = h[tenor.to_numpy()].groupby([f.loc[tenor, "date"], f.loc[tenor, "hour"]]).mean().unstack()
+    grid = grid.reindex(columns=range(24)).round(1)
     return {
         "daily": {"start": str(daily.index[0]), "values": daily.round(2).tolist()},
+        "hourly": {"start": str(grid.index[0]),
+                   "values": [[None if np.isnan(v) else float(v) for v in row] for row in grid.to_numpy()]},
         "last_quoted": last_quote.isoformat(),
         "quotes": [{"contract": q.contract, "start": q.period[0].isoformat(), "end": q.period[1].isoformat(),
                     "price": q.price, "model": round(curve.reprice(q), 4), "extrapolated": q.extrapolated}

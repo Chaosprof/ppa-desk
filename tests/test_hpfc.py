@@ -1,6 +1,7 @@
 import datetime as dt
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from ppa import hpfc
@@ -59,9 +60,42 @@ def test_shape_is_normalised(shape):
 def test_negative_prices_do_not_scale_with_level(shape):
     f = features(hours(dt.date(2027, 6, 6), dt.date(2027, 6, 7)))  # a Sunday
     low, high = shape(f, np.full(len(f), 50.0)), shape(f, np.full(len(f), 200.0))
-    negative_part = shape.down[5, 2]
-    assert np.allclose(high - low, 150.0 * shape.up[5, 2, f["hour"].to_numpy()])
-    assert np.all(negative_part >= 0)
+    assert np.allclose(high - low, 150.0 * shape.factors(f, shape.up))
+    assert np.all(shape.factors(f, shape.down) >= 0)
+
+
+def test_blend_keeps_every_period_mean():
+    rng = np.random.default_rng(1)
+    for periodic in (True, False):
+        table = rng.uniform(50, 150, 12)
+        t = (np.arange(12 * 1000) + 0.5) / 1000 - 0.5  # dense samples across all twelve periods
+        if periodic:
+            t %= 12
+        means = hpfc.blend(hpfc.nodes(table, periodic), t, periodic).reshape(-1, 1000).mean(axis=1)
+        order = np.argsort(np.floor(t[::1000] + 0.5) % 12) if periodic else np.arange(12)
+        assert means[order] == pytest.approx(table, abs=1e-6)
+
+
+def test_positive_nodes_keep_the_total_across_a_sharp_edge():
+    table = np.array([0, 0, 3, 65, 61, 22, 13, 13, 7, 1, 0, 0], dtype=float)  # Sunday 13:00 negative part
+    v = hpfc.nodes(table, periodic=True, positive=True)
+    assert np.all(v >= 0)
+    assert v.sum() == pytest.approx(table.sum(), rel=1e-6)
+    t = (np.arange(12 * 1000) + 0.5) / 1000 - 0.5
+    april = hpfc.blend(v, t % 12, True)[3000:4000].mean()
+    assert april == pytest.approx(65, rel=0.05)
+
+
+def test_prior_has_no_steps_at_month_or_year_boundaries(cfg, shape):
+    """Working days a week apart: the prior moves by little, also across month and year boundaries."""
+    quotes = [q for q in hpfc.quotes_from(cfg["futures"], cfg.years) if q.contract.startswith("Cal")]
+    curve = hpfc.build(quotes, shape)
+    f = features(curve.hourly.index)
+    working = (f["daytype"] == 0).to_numpy()
+    daily = curve.hourly[working].groupby(f.loc[working, "date"]).mean()
+    daily.index = pd.to_datetime(daily.index)
+    weekly = np.abs((daily - daily.shift(7, freq="D")).dropna())
+    assert weekly.max() < 12  # EUR/MWh per week; monthly tables used to jump by 15–25 in one day
 
 
 def test_shape_recovers_the_duck_curve(shape):

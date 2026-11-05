@@ -27,7 +27,7 @@
 ## Invariants guarded by tests
 
 - The HPFC reprices every quote. Independent quotes reprice to 1e-8, implied ones to within rounding.
-- The daily correction has no steps or kinks.
+- The daily correction has no steps or kinks, and the prior has no steps at month or year boundaries.
 - The simulation is unbiased, analogue days are equally weighted, and volume matches the full-load-hours target.
 - The risk premium makes the hedged P10 exactly zero.
 - The valuation decomposition adds up, and the hedge cuts risk.
@@ -40,6 +40,6 @@
 (`#price?tech=solar&site=south&tenor=10`) and renders one view per sidebar item. `charts.js` draws SVG. Adding a
 number to the site means adding it to `build.py` output first. Keep copy minimal: titles and numbers only.
 
-Design rules: three colours only (ink, muted, accent), no borders, dividers, containers, legends, grid lines, tags,
+Design rules: three colours (ink, muted, accent), plus a diverging blue–warm scale for heatmaps; no borders, dividers, containers, legends (a heatmap's colour key aside), grid lines, tags,
 italics, letter-spacing or section numbers. Charts are single lines or solid bars with names at the line ends. Sentence-case
 headings. If a view needs explanatory text, simplify the view instead.

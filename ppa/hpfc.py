@@ -3,9 +3,10 @@
     F_h = (level_h + a_d(h) + b_d(h) * peak_h) * up_h - down_h
 
 The shape (up, down) is learned from recent day-ahead prices per month x day type x hour, and the
-level from the calendar quote and monthly seasonality. The daily level corrections a (and b, if
-peak quotes exist) scale only the positive part of the price. They minimise
-squared second differences — a discrete smoothing spline in the spirit of Benth, Koekebakker and
+level from the calendar quote and monthly seasonality. Every monthly or yearly table is blended
+linearly between period midpoints, so the prior has no steps at month or year boundaries. The daily
+level corrections a (and b, if peak quotes exist) scale only the positive part of the price. They
+minimise squared second differences — a discrete smoothing spline in the spirit of Benth, Koekebakker and
 Ollmar (2007) — subject to every quoted future being repriced exactly by the hourly average.
 """
 
@@ -18,8 +19,9 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+from scipy.optimize import nnls
 
-from .hours import delivery, features, hours
+from .hours import TZ, delivery, features, hours
 
 
 @dataclass(frozen=True)
@@ -41,9 +43,48 @@ class Shape:
         """Expected hourly price for monthly base levels `level` (one per hour)."""
         return level * self.factors(f, self.up) - self.factors(f, self.down)
 
+    def level(self, f: pd.DataFrame) -> np.ndarray:
+        """Monthly level factor at each hour, blended across month boundaries with every monthly mean kept."""
+        return blend(nodes(self.month, periodic=True), f["season"].to_numpy(), True)
+
     @staticmethod
     def factors(f: pd.DataFrame, table: np.ndarray) -> np.ndarray:
-        return table[f["month"].to_numpy() - 1, f["daytype"].to_numpy(), f["hour"].to_numpy()]
+        """An up or down table (month x day type x hour) at each hour, blended across month boundaries."""
+        v = nodes(table, periodic=True, positive=True)
+        return blend(v, f["season"].to_numpy(), True, f["daytype"].to_numpy(), f["hour"].to_numpy())
+
+
+def nodes(table: np.ndarray, periodic: bool, positive: bool = False) -> np.ndarray:
+    """Node values at period midpoints whose linear blend averages to `table` over every period.
+
+    Over period k, the blend averages (v[k-1] + 6 v[k] + v[k+1]) / 8. Periodic tables wrap around;
+    otherwise the blend is flat beyond the first and last midpoints. Works along axis 0.
+
+    Exact nodes overshoot below zero next to a sharp edge (no negative prices in March, many in
+    April). With `positive`, nodes are non-negative, keep the total exactly and every period mean as
+    closely as possible; a little of April's mass then lands in late March.
+    """
+    n = len(table)
+    c = 6 * np.eye(n) + np.roll(np.eye(n), 1, 1) + np.roll(np.eye(n), -1, 1)
+    if not periodic:
+        c[0, -1] = c[-1, 0] = 0
+        c[0, 0] += 1
+        c[-1, -1] += 1
+    flat = table.reshape(n, -1)
+    if not positive:
+        return np.linalg.solve(c / 8, flat).reshape(table.shape)
+    a = np.vstack([c / 8, 1e3 * np.ones(n)])  # heavily weighted row: the total is kept
+    v = [nnls(a, np.append(col, 1e3 * col.sum()))[0] for col in flat.T]
+    return np.column_stack(v).reshape(table.shape)
+
+
+def blend(v: np.ndarray, t: np.ndarray, periodic: bool, *index: np.ndarray) -> np.ndarray:
+    """Linear interpolation of nodes v (axis 0) placed at t = 0, 1, 2, ..."""
+    lo = np.floor(t).astype(int)
+    w = t - lo
+    n = len(v)
+    i0, i1 = (lo % n, (lo + 1) % n) if periodic else (np.clip(lo, 0, n - 1), np.clip(lo + 1, 0, n - 1))
+    return (1 - w) * v[(i0, *index)] + w * v[(i1, *index)]
 
 
 def split(prices: pd.Series) -> pd.DataFrame:
@@ -124,7 +165,7 @@ def build(quotes: list[Quote], shape: Shape, end: dt.date | None = None) -> Curv
     idx = hours(lo, hi)
     f = features(idx)
 
-    level = _annual_levels(quotes, f["year"].to_numpy()) * shape.month[f["month"].to_numpy() - 1]
+    level = _annual_levels(quotes, idx) * shape.level(f)
     prior = shape(f, level)
 
     days, day_of = np.unique(f["date"].to_numpy(), return_inverse=True)
@@ -161,10 +202,14 @@ def build(quotes: list[Quote], shape: Shape, end: dt.date | None = None) -> Curv
     return Curve(curve, quotes, implied, correction)
 
 
-def _annual_levels(quotes: list[Quote], year: np.ndarray) -> np.ndarray:
+def _annual_levels(quotes: list[Quote], idx: pd.DatetimeIndex) -> np.ndarray:
+    """Calendar-year base quotes, blended across New Year with each year's mean kept."""
     cal = {q.period[0].year: q.price for q in quotes if q.contract.startswith("Cal") and not q.peak}
-    first = min(cal)
-    return np.array([cal.get(y, cal[first]) for y in range(year.min(), year.max() + 1)])[year - year.min()]
+    local = idx.tz_convert(TZ)
+    years = np.arange(local.year.min(), local.year.max() + 1)
+    table = np.array([cal.get(y, cal[min(cal)]) for y in years])
+    t = local.year - years[0] + (local.day_of_year - 0.5) / (365 + local.is_leap_year) - 0.5
+    return blend(nodes(table, periodic=False), t.to_numpy(), False)
 
 
 def _mask(idx: pd.DatetimeIndex, q: Quote) -> np.ndarray:

@@ -1,10 +1,13 @@
-/* Three colours: ink, muted, accent. No borders, dividers or opacity layers. */
+/* Three colours: ink, muted, accent. The heatmap adds a diverging scale: blue below zero, warm above. */
 
 :root {
   --bg: #ffffff;
   --ink: #1d1d1f;
   --muted: #86868b;
   --accent: #5e6ad2;
+  --heat-zero: #f0efec;
+  --heat-neg: #3987e5 #104281;
+  --heat-pos: #eb6834 #8f1d1d;
   color-scheme: light;
 }
 
@@ -14,6 +17,9 @@
     --ink: #ececee;
     --muted: #8a8a90;
     --accent: #8189e6;
+    --heat-zero: #383835;
+    --heat-neg: #2a78d6 #9ec5f4;
+    --heat-pos: #d95926 #ffd5a8;
     color-scheme: dark;
   }
 }
@@ -99,6 +105,11 @@ input[type="range"] { width: 120px; margin: 0; accent-color: var(--accent); }
 section { padding-top: 56px; }
 
 h2 { margin: 0 0 20px; font-size: 15px; font-weight: 600; }
+
+.head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+.head .choice { gap: 12px; }
+
+.chart.key { width: 240px; margin: 16px 0 0 auto; }
 
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 64px; }
 

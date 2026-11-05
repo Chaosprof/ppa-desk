@@ -1,4 +1,4 @@
-import { bars, hideTip, histogram, lines, waterfall } from "./charts.js";
+import { bars, colorKey, diverging, heatmap, hideTip, histogram, lines, waterfall } from "./charts.js";
 
 const D = await fetch("data.json").then((r) => r.json());
 const $ = (id) => document.getElementById(id);
@@ -18,7 +18,9 @@ const yy = (year) => `’${String(year).slice(2)}`;
 
 // --- State lives in the URL: #view?tech=solar&site=south&tenor=10 -----------------------------
 
-const state = { view: "price", tech: "solar", site: D.meta.headline.solar, tenor: D.meta.years.length };
+const state = {
+  view: "price", tech: "solar", site: D.meta.headline.solar, tenor: D.meta.years.length, year: String(D.meta.years[0]),
+};
 
 function readHash() {
   const [view, query] = location.hash.slice(1).split("?");
@@ -28,10 +30,12 @@ function readHash() {
   if (D.meta.sites[q.get("site")]) state.site = q.get("site");
   const t = +q.get("tenor");
   if (t >= 1 && t <= D.meta.years.length) state.tenor = t;
+  if (D.meta.years.includes(+q.get("year"))) state.year = q.get("year");
 }
 
 function writeHash() {
-  const q = VIEWS[state.view].controls ? `?tech=${state.tech}&site=${state.site}&tenor=${state.tenor}` : "";
+  const q = VIEWS[state.view].controls ? `?tech=${state.tech}&site=${state.site}&tenor=${state.tenor}`
+    : state.view === "curve" ? `?year=${state.year}` : "";
   history.replaceState(null, "", `#${state.view}${q}`);
 }
 
@@ -106,15 +110,14 @@ function curve(el) {
   const start = new Date(c.daily.start);
   const day = (i) => new Date(start.getTime() + i * 864e5);
   const xs = c.daily.values.map((_, i) => i);
-  const smooth = xs.map((i) => {  // 28-day centred mean
-    const w = c.daily.values.slice(Math.max(0, i - 14), i + 14);
-    return w.reduce((a, b) => a + b, 0) / w.length;
-  });
-  const yearStarts = xs.filter((i) => day(i).getMonth() === 0 && day(i).getDate() === 1 && day(i).getFullYear() % 3 === 0);
+  const dayOf = (iso) => Math.round((new Date(iso) - start) / 864e5);
   const hours = [...Array(24).keys()];
   const shape = hours.map((h) => c.profile.values.reduce((a, row) => a + row[h], 0) / 12);
+  const years = Object.fromEntries(D.meta.years.map((y) => [y, String(y)]));
   el.innerHTML = `
-    <section><h2>Baseload forward, €/MWh</h2><div class="chart" id="hpfc"></div></section>
+    <section><div class="head"><h2>Hourly curve, €/MWh</h2><div class="choice" id="year" role="radiogroup"
+      aria-label="Delivery year"></div></div><div class="chart" id="carpet"></div><div class="chart key" id="key"></div></section>
+    <section><h2>Daily curve and futures, €/MWh</h2><div class="chart" id="hpfc"></div></section>
     <div class="grid">
       <section><h2>Cal-${String(c.profile.year).slice(2)} day, €/MWh</h2><div class="chart" id="day"></div></section>
       <section><h2>Futures</h2>${table(["", "Quote", "Curve"],
@@ -128,6 +131,43 @@ function curve(el) {
         ${stat("Next and third year correlation", f.corr_1_3.toFixed(2))}
       </div></section>
     </div>`;
+
+  choice($("year"), years, "year");
+  const first = new Date(c.hourly.start);
+  const offset = Math.round((new Date(`${state.year}-01-01`) - first) / 864e5);
+  const rows = c.hourly.values.slice(offset, offset + Math.round((new Date(`${+state.year + 1}-01-01`)
+    - new Date(`${state.year}-01-01`)) / 864e5));
+  const flat = rows.flat().filter((v) => v != null).sort((a, b) => a - b);
+  const hi = flat[Math.floor(0.99 * (flat.length - 1))], lo = Math.min(flat[0], -10);
+  const css = getComputedStyle(document.documentElement);
+  const tokens = (k) => css.getPropertyValue(k).trim().split(/\s+/);
+  const color = diverging(lo, hi, { zero: tokens("--heat-zero")[0], neg: tokens("--heat-neg"), pos: tokens("--heat-pos") });
+  const date0 = new Date(`${state.year}-01-01`);
+  const cell = (i) => new Date(date0.getTime() + i * 864e5);
+  heatmap($("carpet"), rows, {
+    color, yTicks: [0, 6, 12, 18],
+    xTicks: rows.map((_, i) => i).filter((i) => cell(i).getDate() === 1)
+      .map((i) => ({ i, label: cell(i).toLocaleDateString("en-GB", { month: "short" }) })),
+    tipFmt: (i, h, v) => `${cell(i).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}`
+      + ` · ${String(h).padStart(2, "0")}:00 · ${eur(v, 1)}`,
+  });
+  colorKey($("key"), lo, hi, color, (v) => v.toFixed(0));
+
+  const y0 = dayOf(`${state.year}-01-01`), y1 = dayOf(`${+state.year + 1}-01-01`) - 1;
+  const yx = xs.slice(y0, y1 + 1);
+  const steps = c.quotes.filter((q) => dayOf(q.start) <= y1 && dayOf(q.end) > y0)
+    .map((q) => ({ x0: Math.max(dayOf(q.start), y0), x1: Math.min(dayOf(q.end) - 1, y1), y: q.price, q,
+      color: q.extrapolated ? "var(--muted)" : "var(--ink)" }));
+  lines($("hpfc"), yx, [{ name: "Curve", color: "var(--accent)", values: c.daily.values.slice(y0, y1 + 1) }], {
+    height: 260, xTicks: yx.filter((i) => day(i).getDate() === 1 && day(i).getMonth() % 3 === 0),
+    xFmt: (i) => day(i).toLocaleDateString("en-GB", { month: "short" }), yFmt: (y) => y.toFixed(0), steps,
+    tipFmt: (k) => [date(day(yx[k])), eur(c.daily.values[yx[k]]),
+      ...steps.filter((s) => s.x0 <= yx[k] && yx[k] <= s.x1).map((s) => `${s.q.contract} ${s.q.price.toFixed(2)}`)].join(" · "),
+  });
+  lines($("day"), hours, [{ name: "Day", color: "var(--accent)", values: shape }], {
+    height: 180, xTicks: [0, 6, 12, 18, 23], xFmt: (h) => `${String(h).padStart(2, "0")}:00`,
+    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
+  });
   const hx = f.next_calendar.dates.map((_, i) => i);
   const firstOfYear = hx.filter((i) => i && f.next_calendar.dates[i].slice(0, 4) !== f.next_calendar.dates[i - 1].slice(0, 4)
     && +f.next_calendar.dates[i].slice(0, 4) % 2 === 0);
@@ -137,14 +177,6 @@ function curve(el) {
     yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
   });
   bars($("term"), f.term.map((b) => ({ label: b.bucket, value: b.vol })), { valueFmt: pct });
-  lines($("hpfc"), xs, [{ name: "Curve", color: "var(--accent)", values: smooth }], {
-    height: 240, xTicks: yearStarts, xFmt: (i, tip) => (tip ? date(day(i)) : day(i).getFullYear()),
-    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
-  });
-  lines($("day"), hours, [{ name: "Day", color: "var(--accent)", values: shape }], {
-    height: 180, xTicks: [0, 6, 12, 18, 23], xFmt: (h) => `${String(h).padStart(2, "0")}:00`,
-    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
-  });
 }
 
 function capture(el) {
