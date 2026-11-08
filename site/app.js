@@ -52,6 +52,7 @@ const VIEWS = {
   curve: { title: "Curve", render: curve },
   capture: { title: "Capture", render: capture },
   fundamentals: { title: "Fundamentals", render: fundamentals },
+  fairvalue: { title: "Fair value", render: fairValue },
   options: { title: "Options", controls: true, render: options },
   data: { title: "Data", render: data },
 };
@@ -231,6 +232,43 @@ function fundamentals(el) {
     { name: "Model", color: "var(--accent)", values: f.day.model },
   ], { height: 180, xTicks: [0, 6, 12, 18, 23], xFmt: (h) => `${String(h).padStart(2, "0")}:00`,
     yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)) });
+}
+
+function fairValue(el) {
+  const f = D.fair_value, t = f.today, s = f.signal;
+  const xs = f.dates.map((_, i) => i);
+  const cx = f.cumulative.dates.map((_, i) => i);
+  const januaries = (dates, idx) => idx.filter((i) => dates[i].slice(5, 7) === "01" && +dates[i].slice(0, 4) % 2 === 1);
+  const row = (label, k, fmt) => [label, ...["gap", "momentum", "long"].map((c) => fmt(s[c][k]))];
+  el.innerHTML = `
+    <section><div class="stats">
+      ${stat(`${t.contract} futures`, eur(t.futures))}
+      ${stat("Fair value", eur(t.fair_value))}
+      ${stat("Gap", signed(t.gap))}
+    </div></section>
+    <section><h2>Next calendar year at each month end, €/MWh</h2><div class="chart" id="fv"></div></section>
+    <div class="grid">
+      <section><h2>Gap trade, cumulative €/MWh</h2><div class="chart" id="fvpnl"></div></section>
+      <section><h2>Next month's move</h2>${table(["", "Gap", "Momentum", "Long"], [
+        row("Months", "months", (v) => v),
+        row("Hit rate", "hit_rate", pct),
+        row("Mean, €/MWh", "mean", signed),
+        row("t-statistic", "t", (v) => v.toFixed(1)),
+      ])}</section>
+    </div>
+    <section><h2>By delivery year, mean over the month ends before it, €/MWh</h2>${table(
+      ["", "Futures", "Fair value", "Realised"],
+      f.years.map((r) => [r.year, r.futures.toFixed(1), r.fair_value.toFixed(1), r.realised == null ? "" : r.realised.toFixed(1)]))}
+    </section>`;
+  lines($("fv"), xs, [
+    { name: "Futures", color: "var(--ink)", values: f.futures },
+    { name: "Fair value", color: "var(--accent)", values: f.fair_value },
+  ], { height: 240, xTicks: januaries(f.dates, xs), xFmt: (i, tip) => (tip ? date(f.dates[i]) : f.dates[i].slice(0, 4)),
+    yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)) });
+  lines($("fvpnl"), cx, [{ name: "Gap", color: "var(--accent)", values: f.cumulative.values }], {
+    height: 180, xTicks: januaries(f.cumulative.dates, cx),
+    xFmt: (i, tip) => (tip ? date(f.cumulative.dates[i]) : f.cumulative.dates[i].slice(0, 4)),
+    yFmt: (y, tip) => (tip ? signed(y) : y.toFixed(0)) });
 }
 
 function options(el) {

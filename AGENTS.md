@@ -12,7 +12,7 @@
 ## Flow
 
 `inputs/market.toml` → `config.py` → `sources.py` (HTTP + parquet cache in `data/`) → `dataset.py` →
-`hpfc.py`, `generation.py`, `capture.py`, `forwards.py`, `fundamental.py` → `simulate.py` → `valuation.py`, `options.py`,
+`hpfc.py`, `generation.py`, `capture.py`, `forwards.py`, `fundamental.py` → `fairvalue.py`, `simulate.py` → `valuation.py`, `options.py`,
 `quality.py` →
 `build.py` writes `site/data.json` (the only contract with the front end) and `MEMO.md`.
 
@@ -40,7 +40,9 @@
   never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses. Wind and
   solar curtail only below zero and never beyond the forecast, and the surplus backstop keeps a surplus off the floor. Committed
   thermal output is flat within each day, stays within the fleet, and widens the daily price range.
-  The trade fit recovers a known response. EEX carbon reports parse whatever their yearly layout.
+  The trade fit recovers a known response. Fair values use only data published before their date, replay
+  the twelve months before it, and drop nuclear once closed; a contract's next move never crosses its expiry.
+  EEX carbon reports parse whatever their yearly layout.
 
 ## Front end
 

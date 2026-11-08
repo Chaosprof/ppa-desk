@@ -98,12 +98,7 @@ def inputs(mix: pd.DataFrame, forecasts: pd.DataFrame, prices: pd.Series, instal
     for f in FUELS:
         x[f"cap_{f}"] = cap[f].to_numpy() * 1000
 
-    usd = fuels["usd"].resample("MS").mean()
-    monthly = pd.DataFrame({
-        "gas": fuels["gas"] * MMBTU_PER_MWH / usd,
-        "coal": fuels["coal"] / usd / MWH_PER_TONNE_COAL,
-        "oil": fuels["oil"] / usd / MWH_PER_BARREL,
-    }).dropna()
+    monthly = fuel_prices(fuels)
     monthly = monthly.reindex(monthly.index.union(month.unique())).ffill()
     for f in ["gas", "coal", "oil"]:
         x[f"fuel_{f}"] = monthly[f].reindex(month).to_numpy()
@@ -115,6 +110,16 @@ def inputs(mix: pd.DataFrame, forecasts: pd.DataFrame, prices: pd.Series, instal
     x["year"] = local.year
     x["day"] = (local.tz_localize(None).normalize() - pd.Timestamp("2000-01-01")).days
     return x.dropna(subset=["co2", "fuel_gas", "cap_gas", "abroad"])
+
+
+def fuel_prices(fuels: dict[str, pd.Series]) -> pd.DataFrame:
+    """Monthly gas, coal and oil in EUR/MWh thermal, from the IMF USD series and the monthly mean exchange rate."""
+    usd = fuels["usd"].resample("MS").mean()
+    return pd.DataFrame({
+        "gas": fuels["gas"] * MMBTU_PER_MWH / usd,
+        "coal": fuels["coal"] / usd / MWH_PER_TONNE_COAL,
+        "oil": fuels["oil"] / usd / MWH_PER_BARREL,
+    }).dropna()
 
 
 def efficiencies(plants: pd.DataFrame) -> dict[str, np.ndarray]:

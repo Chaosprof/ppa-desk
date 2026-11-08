@@ -74,6 +74,14 @@ The bar to clear is the hourly error of knowing each month's actual average pric
 
 Negative hours are close in 2025 (553 against 576) but still 1.2–1.8× the market's count in 2023, 2024 and 2026, and no hour hits the floor. The evening peak is still about €10 short in 2025 and €20 short in 2026.
 
+**Fair value against the market** — [`fairvalue.py`](ppa/fairvalue.py)
+At every month end since January 2019, the fundamental model prices the next calendar year with what was known that day. It replays the twelve months before, with their weather, demand, wind, solar, trade and storage as they were. That replay runs on that day's fuel and carbon prices, the thermal fleet installed then, nuclear on its legal closure path and the parameters fitted on the three years before. The gap to the Cal futures settlement is then traded for one month: long when fair value is above the market, short when below.
+
+- **On 30 October 2026**, Cal-27 settled at €164.27 against a fair value of €130.32. The futures rose €36 in October, and the September fuel prices the model uses have not caught up.
+- **As a signal, the gap is weak.** Over 86 months it called the next move 61% of the time for +€1.79/MWh a month, with a t-statistic of 0.5. Outside the July 2021–June 2023 crisis it is right 56% of the time, t 0.9. Last month's move does better (t 2.2), mostly from the 2021–22 trend.
+- **Against the realised year**, fair value was closer than the futures in 2020, 2023 and 2024, and further in 2021 and 2025. Both missed the crisis by more than €100.
+- **Older weather is not rescaled to today's wind and solar.** The flexibility that grew alongside them is embedded in observed demand: batteries went from 8 to 22 GW over 2023–26. Scaled up, the model saw 1,000–1,700 negative hours a year against about 500 in the market, and priced Cal-27 at €90. The fair value is therefore what the next year would cost if the system and fuel stayed as they are.
+
 **Data quality** — [`quality.py`](ppa/quality.py)
 The checks cover:
 - Coverage and gaps in the price history.
@@ -99,6 +107,7 @@ Everything the model believes that is not fetched lives in [`inputs/market.toml`
 - **15-minute day-ahead products (since Oct 2025):** averaged to hourly.
 - **Price levels:** one factor moves all calendar years together.
 - **Fundamental model fuel prices:** gas, coal and oil are IMF monthly averages (free daily TTF and API2 are licensed), and coal is Newcastle rather than the Rotterdam API2 that German plants pay. Within-month swings, as in August 2022, are missed.
+- **Fair value inputs:** fuel enters at the month's spot price, held flat, because free gas and coal forward curves do not exist. When the curve is in steep backwardation or contango, as in 2021–23, the gap mostly measures that rather than mispricing. Capacity growth is left out until the model can grow flexibility with it.
 - **Fundamental model scope:** one German node with a fitted trade function, not a European dispatch. Intertemporal constraints (start-up costs, ramping) show up only as must-run and bid noise.
 - **Clause and cannibalisation overlap:** the projected capture-rate drop applies to positive-price volume, while simulated negative hours stay at today's frequency. Part of the future drop comes from more negative hours, which the clause excludes, so some overlap is likely.
 

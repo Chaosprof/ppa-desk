@@ -53,4 +53,8 @@
 
 An hourly merit order of the German market, built only from public data and fitted on the 3 years before each test year. In 2025 it averaged €88/MWh against €89 actual, missed hourly prices by €19 on average (knowing each month's actual average would miss by €35), and put the solar capture rate at 0.51 against 0.52.
 
-Built 2026-11-08T08:29:12+00:00 from public data. Interactive version: `python -m ppa serve`.
+## Fair value
+
+On 2026-10-30 the model priced Cal-27 at €130.32/MWh against €164.27 on the exchange, from the last twelve months replayed at that day's fuel and carbon. Traded month by month since 2019, the gap called the next move 61% of the time over 86 months (t = 0.5): not yet a signal.
+
+Built 2026-11-08T11:34:47+00:00 from public data. Interactive version: `python -m ppa serve`.

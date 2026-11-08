@@ -10,7 +10,19 @@ import time
 import numpy as np
 import pandas as pd
 
-from . import capture, forwards, fundamental, generation, hpfc, options, quality, simulate, sources, valuation
+from . import (
+    capture,
+    fairvalue,
+    forwards,
+    fundamental,
+    generation,
+    hpfc,
+    options,
+    quality,
+    simulate,
+    sources,
+    valuation,
+)
 from .config import HISTORY_START, ROOT, Config, load
 from .dataset import Dataset
 from .hours import TZ, features, hours
@@ -59,7 +71,10 @@ def run(cfg: Config | None = None, log=print) -> dict:
                                                      tech, complete, cfg["capacity_mw"]) for tech in TECHS}
 
     say("fundamental")
-    fund = _fundamental(data, cfg)
+    fund, fund_x, fund_params = _fundamental(data, cfg)
+
+    say("fair value")
+    fair = _fair_value(data, cfg, fund_x, fund_params)
 
     say("balancing")
     balancing = _balancing(data, cfg)
@@ -114,6 +129,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
         "balancing": {k: round(v, 2) for k, v in balancing.items()},
         "options": opts,
         "fundamental": fund,
+        "fair_value": fair,
         "quality": checks,
     }
     (ROOT / "site" / "data.json").write_text(json.dumps(out, separators=(",", ":"), allow_nan=False))
@@ -152,14 +168,67 @@ def _assumptions(cfg: Config, rates: pd.Series, fwd: dict) -> list[dict]:
     ]
 
 
-def _fundamental(data: Dataset, cfg: Config) -> dict:
-    """Merit-order backtest: each year predicted from a fit on the years before it. Cached; fitting takes a minute."""
+def _key(*parts) -> str:
+    return hashlib.sha1(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:10]
+
+
+def _backtest(x: pd.DataFrame, data: Dataset, cfg: Config) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Hourly backtest prices and the parameters fitted for each test year, cached together in data/."""
+    fc = cfg["fundamental"]
+    key = _key(fc, fundamental.VERSION)
+    hourly = sources.DATA / f"fundamental_{cfg.history_end}_{key}.parquet"
+    params = sources.DATA / f"fundamental_{cfg.history_end}_{key}_params.parquet"
+    if not (hourly.exists() and params.exists()):
+        h, p = fundamental.backtest(x, fundamental.efficiencies(data.plants), fc)
+        h.to_parquet(hourly)
+        p.to_parquet(params)
+    return pd.read_parquet(hourly), pd.read_parquet(params)
+
+
+def _fair_value(data: Dataset, cfg: Config, x: pd.DataFrame, params: pd.DataFrame) -> dict:
+    """Monthly fundamental fair value of the next calendar year against its futures, and the gap as a signal."""
+    fc = cfg["fundamental"]
+    history = forwards.clean(data.omip_history)
+    cal = forwards.next_calendar(data.omip_history)
+    futures = fairvalue.month_ends(cal, pd.Timestamp(int(params.index.min()), 1, 1), pd.Timestamp(cfg.valuation_date))
+    fv = sources._cached(
+        f"fairvalue_{cfg.history_end}_{_key(fc, fundamental.VERSION, fairvalue.VERSION)}",
+        lambda: fairvalue.run(x, data.mix["nuclear"], data.installed, data.fuels, data.eua, params,
+                              fundamental.efficiencies(data.plants), futures, fc))
+    change = fairvalue.next_change(history, fv)
+    gap = fairvalue.signal_stats(fv["gap"], change)
+    momentum = fairvalue.signal_stats(change.shift(1), change)
+    always = fairvalue.signal_stats(pd.Series(1.0, index=change.index), change)
+    stats = lambda st: {k: None if np.isnan(v) else round(v, 3) for k, v in st.items() if k != "cumulative"}  # noqa: E731
+    years = fairvalue.delivery_years(fv, data.prices)
+    last = fv.iloc[-1]
+    return {
+        "dates": [d.date().isoformat() for d in fv.index],
+        "futures": fv["futures"].round(2).tolist(),
+        "fair_value": fv["fair_value"].round(2).tolist(),
+        "today": {"date": fv.index[-1].date().isoformat(), "contract": last["contract"],
+                  "futures": round(float(last["futures"]), 2), "fair_value": round(float(last["fair_value"]), 2),
+                  "gap": round(float(last["gap"]), 2)},
+        "signal": {"gap": stats(gap), "momentum": stats(momentum), "long": stats(always)},
+        "cumulative": {"dates": [d.date().isoformat() for d in gap["cumulative"].index],
+                       "values": gap["cumulative"].round(2).tolist()},
+        "years": [{"year": int(y), "futures": round(float(r["futures"]), 2),
+                   "fair_value": round(float(r["fair_value"]), 2),
+                   "realised": None if pd.isna(r["realised"]) else round(float(r["realised"]), 2)}
+                  for y, r in years.iterrows()],
+    }
+
+
+def _fundamental(data: Dataset, cfg: Config) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
+    """Merit-order backtest: each year predicted from a fit on the years before it. Cached; fitting takes minutes.
+
+    Returns the site's numbers, the hourly model inputs and the fitted parameters by test year.
+    """
     fc = cfg["fundamental"]
     x = fundamental.inputs(data.mix, data.da_forecasts, data.prices, data.installed, data.fuels, data.eua,
                            data.neighbours, fc)
-    key = hashlib.sha1(json.dumps([fc, fundamental.VERSION], sort_keys=True, default=str).encode()).hexdigest()[:10]
-    model = sources._cached(f"fundamental_{cfg.history_end}_{key}",
-                            lambda: fundamental.backtest(x, fundamental.efficiencies(data.plants), fc)[0])["model"]
+    hourly, params = _backtest(x, data, cfg)
+    model = hourly["model"]
     m = fundamental.metrics(x, model)
     d = x.loc[model.index, ["price"]].assign(model=model)
     local = d.index.tz_convert(TZ)
@@ -172,7 +241,7 @@ def _fundamental(data: Dataset, cfg: Config) -> dict:
         "monthly": {"months": monthly.index.tolist(), "actual": monthly["price"].round(2).tolist(),
                     "model": monthly["model"].round(2).tolist()},
         "day": {"year": full, "actual": day["price"].round(2).tolist(), "model": day["model"].round(2).tolist()},
-    }
+    }, x, params
 
 
 def _balancing(data: Dataset, cfg: Config) -> dict[str, float]:
@@ -304,10 +373,25 @@ def memo(out: dict) -> str:
         "",
         *_memo_fundamental(out["fundamental"]),
         "",
+        *_memo_fair_value(out["fair_value"]),
+        "",
         f"Built {meta['built']} from public data. Interactive version: `python -m ppa serve`.",
         "",
     ]
     return "\n".join(lines)
+
+
+def _memo_fair_value(f: dict) -> list[str]:
+    t, g = f["today"], f["signal"]["gap"]
+    hit = int(g["hit_rate"] * 100 + 0.5)  # half up, as the site rounds
+    return [
+        "## Fair value",
+        "",
+        f"On {t['date']} the model priced {t['contract']} at €{t['fair_value']:.2f}/MWh against €{t['futures']:.2f} "
+        f"on the exchange, from the last twelve months replayed at that day's fuel and carbon. Traded month by month "
+        f"since 2019, the gap called the next move {hit}% of the time over {g['months']} months "
+        f"(t = {g['t']:.1f}): not yet a signal.",
+    ]
 
 
 def _memo_fundamental(f: dict) -> list[str]:
