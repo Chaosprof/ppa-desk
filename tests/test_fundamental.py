@@ -20,7 +20,7 @@ def hours_frame(n: int, rng: np.random.Generator) -> pd.DataFrame:
     """Synthetic hours with a realistic fleet and fuel prices; demand varies around the thermal range."""
     idx = pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC")
     x = pd.DataFrame(index=idx)
-    x["demand"] = 55000 + 12000 * np.sin(np.arange(n) / 24 * 2 * np.pi) + rng.normal(0, 3000, n)
+    x["demand"] = 55000 + 10000 * np.sin(np.arange(n) / 24 * 2 * np.pi) + rng.normal(0, 3000, n)
     x["must_take"] = 8000.0
     variable = rng.uniform(5000, 40000, n)
     x["wind_fc"], x["solar_fc"] = variable * 0.6, variable * 0.4
@@ -43,7 +43,9 @@ def market():
     must_run = {f: np.full(12, 0.1) for f in fm.FUELS}
     trade = np.r_[0.0, 0.0, -0.1, -0.1, -0.05, 3000.0, 2000.0, 0.4]
     fl = fm.Fleet(eff, avail, must_run, trade, (-15000.0, 15000.0), 6000.0, {"wind": 1.0, "solar": 0.95})
-    return fm.Market(x, fl, fm.X0, CFG), x, fl
+    mk = fm.Market(x, fl, fm.X0, CFG)
+    fm.solve(mk, x, fl, CFG, np.zeros(len(x)))  # commits plants for each day
+    return mk, x, fl
 
 
 def test_clearing_meets_demand(market):
@@ -86,6 +88,36 @@ def test_the_surplus_backstop_keeps_a_surplus_off_the_floor(market):
     storage = x["demand"].to_numpy() - (bare.supply(np.full(len(x), fm.FLOOR)) - 4000.0)
     assert (bare.clear(storage) < fm.FLOOR + 1).all()
     assert (mk.clear(storage) > fm.FLOOR + 1).all()
+
+
+def test_committed_output_follows_the_day_and_stays_within_the_fleet(market):
+    mk, x, fl = market
+    mk = fm.Market(x, fl, fm.X0, CFG)
+    p = mk.clear(np.zeros(len(x)))
+    mk.commit(p, damping=1.0)
+    merit = mk.merit(p)
+    for f in fm.FUELS:
+        by_day = pd.Series(mk.committed[f]).groupby(x["day"].to_numpy())
+        assert (by_day.nunique() == 1).all()
+        assert (mk.committed[f] + (1 - mk.share) * merit[f] <= mk.flex[f] + 1e-6).all()
+        assert by_day.first().to_numpy() == pytest.approx(
+            mk.share * pd.Series(merit[f]).groupby(x["day"].to_numpy()).mean().to_numpy())
+    deep = mk.dispatch(np.full(len(x), mk.shutdown - 60))
+    floor = mk.merit(np.full(len(x), mk.shutdown - 60))
+    for f in fm.FUELS:
+        assert deep[f] == pytest.approx(mk.mr[f] + (1 - mk.share) * floor[f], abs=1.0)
+
+
+def test_commitment_widens_the_daily_price_range(market):
+    """Plants held to the day's dispatch cannot follow the hour, so the price has to move more."""
+    _, x, fl = market
+    ranges = []
+    for share in [0.0, 0.5]:
+        theta = fm.X0.copy()
+        theta[11] = share
+        p, _ = fm.solve(fm.Market(x, fl, theta, CFG), x, fl, CFG, np.zeros(len(x)))
+        ranges.append(pd.Series(p).groupby(x["day"].to_numpy()).agg(lambda v: v.max() - v.min()).mean())
+    assert ranges[1] > ranges[0]
 
 
 def test_storage_arbitrage_respects_power_and_losses():

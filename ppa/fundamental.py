@@ -10,7 +10,11 @@ against
                plants) runs at any price; wind and solar each have their own shares
     thermal    lignite, hard coal, gas and oil. A must-run part (heat-led CHP, inflexible units) runs at
                any price; the flexible rest bids fuel plus carbon over efficiency, spread across the
-               fleet's efficiencies (Open Power System Data) and blurred by a calibrated bid noise
+               fleet's efficiencies (Open Power System Data) and blurred by a calibrated bid noise.
+               A fitted share of the flexible output is committed for the day: it follows the day's
+               mean dispatch rather than the hour's price, so plants needed for the evening stay on
+               through a cheap midday and cannot all ramp up for the peak, and it backs off only once
+               the price falls below a fitted shut-down price
     trade      net imports, linear in German demand less must-take, in the wind and in the solar
                forecast separately (solar is shared with the neighbours, wind less so) and in the
                neighbours' residual load (their demand less nuclear, hydro, biomass, wind and solar),
@@ -23,9 +27,13 @@ against
                a surplus off the price floor
     storage    pumped hydro charges in the cheapest hours of each day and discharges in the dearest
 
+Commitment and storage depend on the whole day's prices, so a day is cleared, committed and scheduled, and
+cleared again until it settles.
+
 Availability and must-run are read from observed dispatch, and the trade function is fitted to observed
-trade and prices. Eleven behavioural parameters (a markup per fuel, bid noise, curtailment of wind and
-solar) are then fitted by clearing the market, to prices, generation by fuel, wind, solar and trade together.
+trade and prices. Thirteen behavioural parameters (a markup per fuel, bid noise, curtailment of wind and
+solar, the committed share and its shut-down price) are then fitted by clearing the market, to prices,
+generation by fuel, wind, solar and trade together.
 """
 
 from __future__ import annotations
@@ -40,7 +48,7 @@ from scipy.special import ndtr
 
 from .hours import TZ
 
-VERSION = 2  # bump when the model changes, so build re-runs the cached backtest
+VERSION = 3  # bump when the model changes, so build re-runs the cached backtest
 FUELS = ["lignite", "coal", "gas", "oil"]
 PLANT_SOURCE = {"lignite": "Lignite", "coal": "Hard coal", "gas": "Natural gas", "oil": "Oil"}
 MUST_TAKE = ["nuclear", "ror", "reservoir", "biomass", "geothermal", "waste", "others", "coal_gas"]
@@ -56,6 +64,7 @@ BINS = 8
 MUST_RUN_QUANTILE = 0.02  # share of capacity running in a month's quietest hours
 UNCURTAILED = 20.0  # EUR/MWh; above this, wind and solar have no reason to curtail
 ZERO_WIDTH = 0.5  # EUR/MWh; spread of the bids at zero
+SHUTDOWN_WIDTH = 10.0  # EUR/MWh; spread of committed plants' shut-down prices
 
 
 # --- Inputs --------------------------------------------------------------------------------------
@@ -186,10 +195,10 @@ def fit_trade(x: pd.DataFrame, cfg: dict) -> np.ndarray:
 
 
 PARAMS = ["markup_lignite", "markup_coal", "markup_gas", "markup_oil", "noise", "noise_floor", "wind_curtail",
-          "solar_curtail", "curtail_scale", "wind_zero", "solar_zero"]
-X0 = np.array([5.0, 5.0, 5.0, 10.0, 0.05, 5.0, 0.3, 0.05, 50.0, 0.05, 0.02])
-LOWER = np.array([-40.0, -40.0, -40.0, -40.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.0, 0.0])
-UPPER = np.array([80.0, 80.0, 80.0, 150.0, 0.8, 60.0, 0.9, 0.9, 400.0, 0.5, 0.5])
+          "solar_curtail", "curtail_scale", "wind_zero", "solar_zero", "committed", "shutdown"]
+X0 = np.array([5.0, 5.0, 5.0, 10.0, 0.05, 5.0, 0.3, 0.05, 50.0, 0.05, 0.02, 0.3, -20.0])
+LOWER = np.array([-40.0, -40.0, -40.0, -40.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, -150.0])
+UPPER = np.array([80.0, 80.0, 80.0, 150.0, 0.8, 60.0, 0.9, 0.9, 400.0, 0.5, 0.5, 0.95, 60.0])
 
 
 class Market:
@@ -197,6 +206,9 @@ class Market:
 
     def __init__(self, x: pd.DataFrame, fl: Fleet, theta: np.ndarray, cfg: dict):
         self.theta = theta
+        self.day = x["day"].to_numpy()
+        self.share, self.shutdown = theta[11:13]
+        self.committed = {f: np.zeros(len(x)) for f in FUELS}  # MW, set by commit()
         m = x["month"].to_numpy() - 1
         self.demand = x["demand"].to_numpy()
         self.must_take = x["must_take"].to_numpy()
@@ -216,9 +228,20 @@ class Market:
         self.trade, self.trade_limits = fl.trade, fl.trade_limits
         self.response, self.absorb = cfg["demand_response"], cfg["surplus_response"]
 
+    def merit(self, p: np.ndarray) -> dict[str, np.ndarray]:
+        """Flexible thermal output if every plant followed the hour's price alone."""
+        return {f: self.flex[f] * ndtr((p[:, None] - self.cost[f]) / self.sigma[f]).mean(axis=1) for f in FUELS}
+
+    def commit(self, p: np.ndarray, damping: float = 0.5) -> None:
+        """Move the committed output towards the share of each day's mean merit-order dispatch at prices p."""
+        _, days = np.unique(self.day, return_inverse=True)
+        for f, v in self.merit(p).items():
+            target = self.share * (np.bincount(days, v) / np.bincount(days))[days]
+            self.committed[f] = (1 - damping) * self.committed[f] + damping * target
+
     def dispatch(self, p: np.ndarray) -> dict[str, np.ndarray]:
-        out = {f: self.mr[f] + self.flex[f] * ndtr((p[:, None] - self.cost[f]) / self.sigma[f]).mean(axis=1)
-               for f in FUELS}
+        stay = ndtr((p - self.shutdown) / SHUTDOWN_WIDTH)
+        out = {f: self.mr[f] + self.committed[f] * stay + (1 - self.share) * v for f, v in self.merit(p).items()}
         wind_curtail, solar_curtail, scale, wind_zero, solar_zero = self.theta[6:11]
         gradual = 1 - np.exp(np.minimum(p, 0) / scale)
         at_zero = ndtr(-p / ZERO_WIDTH)
@@ -266,16 +289,24 @@ def arbitrage(price: np.ndarray, day: np.ndarray, power: np.ndarray, hours: floa
     return out
 
 
-def clear_with_storage(market: Market, x: pd.DataFrame, fl: Fleet, cfg: dict,
-                       rounds: int = 4) -> tuple[np.ndarray, np.ndarray]:
-    """Clear, schedule storage against those prices, clear again; damped so the schedule settles."""
+def solve(market: Market, x: pd.DataFrame, fl: Fleet, cfg: dict, storage: np.ndarray | None = None,
+          rounds: int = 4) -> tuple[np.ndarray, np.ndarray]:
+    """Clear, commit plants and schedule storage against those prices, clear again; damped so both settle.
+
+    Given a storage schedule (observed, in calibration), only the commitment is iterated.
+    """
     day = x["day"].to_numpy()
     pumped = np.full(len(x), fl.pumped_mw)
-    storage = np.zeros(len(x))
+    scheduled = storage is None
+    storage = np.zeros(len(x)) if scheduled else storage
+    price = market.clear(storage)
+    market.commit(price, damping=1.0)
     price = market.clear(storage)
     for _ in range(rounds):
-        target = arbitrage(price, day, pumped, cfg["pumped_hours"], cfg["pumped_efficiency"])
-        storage = 0.5 * storage + 0.5 * target
+        if scheduled:
+            target = arbitrage(price, day, pumped, cfg["pumped_hours"], cfg["pumped_efficiency"])
+            storage = 0.5 * storage + 0.5 * target
+        market.commit(price)
         price = market.clear(storage)
     return price, storage
 
@@ -284,11 +315,12 @@ def clear_with_storage(market: Market, x: pd.DataFrame, fl: Fleet, cfg: dict,
 
 
 def fit(x: pd.DataFrame, fl: Fleet, cfg: dict, every: int = 6) -> np.ndarray:
-    """Behavioural parameters that best reproduce prices, generation by fuel and trade together.
+    """Behavioural parameters that best reproduce prices, generation by fuel, wind, solar and trade together.
 
-    Observed storage is taken as given here so that the fit is about the merit order alone.
+    Fitted on every `every`-th day, whole, since commitment depends on the day. Observed storage is taken as
+    given so that the fit is about the merit order alone.
     """
-    s = x.iloc[::every]
+    s = x[x["day"] % every == 0]
     storage = s["storage"].to_numpy()
     observed = {k: s[k].to_numpy() for k in FUELS + ["wind", "solar", "trade"]}
     price = s["price"].to_numpy()
@@ -297,7 +329,7 @@ def fit(x: pd.DataFrame, fl: Fleet, cfg: dict, every: int = 6) -> np.ndarray:
 
     def residuals(theta):
         market = Market(s, fl, theta, cfg)
-        p = market.clear(storage)
+        p, _ = solve(market, s, fl, cfg, storage, rounds=2)
         d = market.dispatch(p)
         return np.concatenate([(p - price) / scale] + [(d[k] - observed[k]) / 3000.0 for k in observed])
 
@@ -308,7 +340,7 @@ def _test_year(args) -> tuple[pd.DataFrame, np.ndarray]:
     train, test, eff, cfg = args
     fl = fleet(train, eff, cfg)
     theta = fit(train, fl, cfg)
-    price, storage = clear_with_storage(Market(test, fl, theta, cfg), test, fl, cfg)
+    price, storage = solve(Market(test, fl, theta, cfg), test, fl, cfg)
     return pd.DataFrame({"model": price, "storage_model": storage}, index=test.index), theta
 
 

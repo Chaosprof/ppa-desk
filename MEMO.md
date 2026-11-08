@@ -51,6 +51,6 @@
 
 ## Fundamental model
 
-An hourly merit order of the German market, built only from public data and fitted on the 3 years before each test year. In 2025 it averaged €89/MWh against €89 actual, missed hourly prices by €22 on average (knowing each month's actual average would miss by €35), and put the solar capture rate at 0.61 against 0.52.
+An hourly merit order of the German market, built only from public data and fitted on the 3 years before each test year. In 2025 it averaged €88/MWh against €89 actual, missed hourly prices by €19 on average (knowing each month's actual average would miss by €35), and put the solar capture rate at 0.51 against 0.52.
 
-Built 2026-11-05T22:26:56+00:00 from public data. Interactive version: `python -m ppa serve`.
+Built 2026-11-08T08:29:12+00:00 from public data. Interactive version: `python -m ppa serve`.

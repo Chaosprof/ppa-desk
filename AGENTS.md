@@ -25,7 +25,7 @@
 - Simulated prices must stay unbiased against the curve (`E[P_h] = F_h`). Decomposition steps must sum to the price.
 - Assumptions belong in `inputs/market.toml`, not in code.
 - `fundamental.py` caches its backtest in `data/` keyed on its config and `VERSION`; bump `VERSION` when the model
-  changes.
+  changes. The backtest then re-runs, which takes about 10 minutes.
 
 ## Invariants guarded by tests
 
@@ -38,7 +38,8 @@
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
 - The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage
   never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses. Wind and
-  solar curtail only below zero and never beyond the forecast, and the surplus backstop keeps a surplus off the floor.
+  solar curtail only below zero and never beyond the forecast, and the surplus backstop keeps a surplus off the floor. Committed
+  thermal output is flat within each day, stays within the fleet, and widens the daily price range.
   The trade fit recovers a known response. EEX carbon reports parse whatever their yearly layout.
 
 ## Front end
