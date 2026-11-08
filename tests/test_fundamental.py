@@ -12,6 +12,7 @@ CFG = {
     "vom": {"lignite": 4.0, "coal": 4.0, "gas": 2.0, "oil": 3.0},
     "pumped_hours": 6.0, "pumped_efficiency": 0.75,
     "demand_response": {"mw": 5000.0, "price": 500.0, "spread": 150.0},
+    "surplus_response": {"mw": 5000.0, "price": -150.0, "spread": 50.0},
 }
 
 
@@ -21,8 +22,8 @@ def hours_frame(n: int, rng: np.random.Generator) -> pd.DataFrame:
     x = pd.DataFrame(index=idx)
     x["demand"] = 55000 + 12000 * np.sin(np.arange(n) / 24 * 2 * np.pi) + rng.normal(0, 3000, n)
     x["must_take"] = 8000.0
-    x["variable"] = rng.uniform(5000, 40000, n)
-    x["wind_fc"], x["solar_fc"] = x["variable"] * 0.6, x["variable"] * 0.4
+    variable = rng.uniform(5000, 40000, n)
+    x["wind_fc"], x["solar_fc"] = variable * 0.6, variable * 0.4
     x["abroad"] = rng.normal(20000, 5000, n)
     for f, cap in {"lignite": 15000, "coal": 15000, "gas": 35000, "oil": 4000}.items():
         x[f"cap_{f}"] = float(cap)
@@ -41,7 +42,7 @@ def market():
     avail = {f: np.full(12, 0.85) for f in fm.FUELS}
     must_run = {f: np.full(12, 0.1) for f in fm.FUELS}
     trade = np.r_[0.0, 0.0, -0.1, -0.1, -0.05, 3000.0, 2000.0, 0.4]
-    fl = fm.Fleet(eff, avail, must_run, trade, (-15000.0, 15000.0), 6000.0)
+    fl = fm.Fleet(eff, avail, must_run, trade, (-15000.0, 15000.0), 6000.0, {"wind": 1.0, "solar": 0.95})
     return fm.Market(x, fl, fm.X0, CFG), x, fl
 
 
@@ -65,6 +66,26 @@ def test_more_demand_never_lowers_the_price(market):
     base = mk.clear(np.zeros(len(x)))
     tighter = mk.clear(np.full(len(x), -2000.0))  # storage charging adds 2 GW of demand
     assert (tighter >= base - 1e-6).all()
+
+
+def test_wind_and_solar_curtail_only_below_zero_and_never_beyond_the_forecast(market):
+    mk, x, fl = market
+    for p in [5.0, 50.0, 500.0]:
+        d = mk.dispatch(np.full(len(x), p))
+        assert np.allclose(d["wind"], x["wind_fc"] * fl.level["wind"], rtol=1e-3)
+        assert np.allclose(d["solar"], x["solar_fc"] * fl.level["solar"], rtol=1e-3)
+    grid = np.linspace(-490, 20, 60)
+    out = np.array([mk.dispatch(np.full(len(x), g))["wind"] for g in grid])
+    assert (out >= 0).all() and (np.diff(out, axis=0) >= -1e-6).all()
+
+
+def test_the_surplus_backstop_keeps_a_surplus_off_the_floor(market):
+    """A surplus 4 GW beyond what curtailment and exports absorb hits the floor without the backstop, not with it."""
+    mk, x, fl = market
+    bare = fm.Market(x, fl, fm.X0, {**CFG, "surplus_response": {**CFG["surplus_response"], "mw": 0.0}})
+    storage = x["demand"].to_numpy() - (bare.supply(np.full(len(x), fm.FLOOR)) - 4000.0)
+    assert (bare.clear(storage) < fm.FLOOR + 1).all()
+    assert (mk.clear(storage) > fm.FLOOR + 1).all()
 
 
 def test_storage_arbitrage_respects_power_and_losses():

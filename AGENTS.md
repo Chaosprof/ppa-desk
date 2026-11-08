@@ -37,7 +37,8 @@
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
 - The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage
-  never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses.
+  never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses. Wind and
+  solar curtail only below zero and never beyond the forecast, and the surplus backstop keeps a surplus off the floor.
   The trade fit recovers a known response. EEX carbon reports parse whatever their yearly layout.
 
 ## Front end

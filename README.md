@@ -56,18 +56,22 @@ Daily OMIP settlements for every German base month, quarter and calendar contrac
 
 **Fundamental model** — [`fundamental.py`](ppa/fundamental.py)
 An hourly merit order of the German day-ahead market, built only from free data. Every hour, demand served by the public grid clears against:
-- **Must-take supply:** nuclear, hydro, biomass and waste as observed, plus the day-ahead wind and solar forecast, which curtails at negative prices.
+- **Must-take supply:** nuclear, hydro, biomass and waste as observed.
+- **Wind and solar:** the day-ahead forecast, scaled to the output it turned into in training hours with no reason to curtail. Below zero, a block of each switches off at once, because subsidised plants lose their premium at negative prices and are bid at zero. More curtails gradually as the price falls, and the rest (rooftop solar, old fixed-tariff plants) runs at any price.
 - **Thermal plants:** lignite, hard coal, gas and oil. A must-run part (heat-led CHP, inflexible units) runs at any price. The flexible rest bids fuel plus carbon over efficiency, spread across the real fleet's efficiencies and blurred by a fitted bid noise.
 - **Trade:** net imports, linear in German demand, the wind forecast and the solar forecast, and in the residual load of all ten neighbours. A bounded response to the German price around a gas plant's cost sits on top.
 - **Storage:** pumped hydro charges in each day's cheapest hours and discharges in its dearest.
+- **Backstops:** demand backs off at scarcity prices, and power-to-heat, extra pumping and plants running below cost take on load at very negative ones.
 
-Availability and must-run are read from observed dispatch, and the trade function is fitted on observed trade and prices. Eight behavioural parameters (a markup per fuel, bid noise, curtailment) are then fitted by clearing the market against prices and generation by fuel together. Each test year is predicted by a model fitted only on the three years before it, with that year's actual fuel prices, carbon, demand, weather and capacity.
+Availability and must-run are read from observed dispatch, and the trade function is fitted on observed trade and prices. Eleven behavioural parameters (a markup per fuel, bid noise, and wind and solar curtailment) are then fitted by clearing the market against prices, generation by fuel, wind and solar output, and trade together. Each test year is predicted by a model fitted only on the three years before it, with that year's actual fuel prices, carbon, demand, weather and capacity.
 
-The bar to clear is the hourly error of knowing each month's actual average price in advance. Out of sample, the model beats it in every year from 2019 to 2026: for example €19 against €32 in 2023, €23 against €35 in 2025, and €57 against €80 in the 2022 crisis. In 2025 it put the solar capture rate at 0.54 against 0.52 actual. Two findings shaped it:
+The bar to clear is the hourly error of knowing each month's actual average price in advance. Out of sample, the model beats it in every year from 2019 to 2026: for example €20 against €32 in 2023, €22 against €35 in 2025, and €56 against €80 in the 2022 crisis. Four findings shaped it:
 - **Trade has to see the neighbours.** Germany's net position swung by about 5 GW between 2022 and 2024 as French nuclear recovered. Trade fitted on German conditions alone priced 2024 €36 too high; adding the ten neighbours' residual load brought it to within €10.
 - **Exports saturate at sunny middays,** because the neighbours have solar too. A price response that let exports keep growing put 2025 midday prices at €92 against €46.
+- **The solar forecast runs high.** It is 3–6% above actual output even in hours with no reason to curtail, while demand is built from actual output. Unscaled, that gap was 1–2 GW of phantom surplus at every sunny midday.
+- **Wind curtails, solar barely does.** Against its forecast, wind output falls 5% at €0, 15% at −€20 and 44% below −€50, while solar falls a few percent. One shared curtailment curve left the model with too many shallow negative hours and, in 2024–25, surpluses that hit the −€500 floor.
 
-The model still produces about twice as many negative hours as the market, though too shallow, and it understates the evening peak (2025: €115 against €136 at 19:00).
+Negative hours are now close in 2025 and 2026 (536 against 576, 504 against 475) and no hour hits the floor, but 2023 still has twice the market's count (645 against 301). The daily shape is too flat: 2025 middays come out at €66 against €46 and evenings at €116 against €136 at 19:00, so the model puts solar capture at 0.61 against 0.52. Before the forecast was scaled, the phantom midday surplus offset this and capture looked right.
 
 **Data quality** — [`quality.py`](ppa/quality.py)
 The checks cover:

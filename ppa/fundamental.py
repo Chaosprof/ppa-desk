@@ -2,8 +2,12 @@
 
 Each hour, demand served by the public grid (generation plus net imports plus net storage output) clears
 against
-    must-take  nuclear, hydro, biomass, waste and others as observed, plus the day-ahead wind and solar
-               forecast, which curtails at negative prices
+    must-take  nuclear, hydro, biomass, waste and others as observed
+    wind/solar the day-ahead forecast, scaled to the output it turned into in training hours that had no
+               reason to curtail. Below zero, a block of each switches off at once (subsidised plants
+               lose their premium when the price is negative, so their marketers bid at zero), more
+               curtails gradually as prices fall, and the rest (rooftop solar, old fixed-tariff
+               plants) runs at any price; wind and solar each have their own shares
     thermal    lignite, hard coal, gas and oil. A must-run part (heat-led CHP, inflexible units) runs at
                any price; the flexible rest bids fuel plus carbon over efficiency, spread across the
                fleet's efficiencies (Open Power System Data) and blurred by a calibrated bid noise
@@ -14,12 +18,14 @@ against
                separately for imports and exports (at sunny middays the neighbours are flooded too,
                so extra exports are scarce),
                held within the export and import limits seen in training
-    scarcity   demand response that steps in at very high prices
+    backstops  demand response that steps in at very high prices, and load and losses taken on at very
+               negative ones (power-to-heat, extra pumping, plants running below cost), which keeps
+               a surplus off the price floor
     storage    pumped hydro charges in the cheapest hours of each day and discharges in the dearest
 
 Availability and must-run are read from observed dispatch, and the trade function is fitted to observed
-trade and prices. Eight behavioural parameters (a markup per fuel, bid noise, curtailment) are then fitted
-by clearing the market, to prices, generation by fuel and trade together.
+trade and prices. Eleven behavioural parameters (a markup per fuel, bid noise, curtailment of wind and
+solar) are then fitted by clearing the market, to prices, generation by fuel, wind, solar and trade together.
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ from scipy.special import ndtr
 
 from .hours import TZ
 
-VERSION = 1  # bump when the model changes, so build re-runs the cached backtest
+VERSION = 2  # bump when the model changes, so build re-runs the cached backtest
 FUELS = ["lignite", "coal", "gas", "oil"]
 PLANT_SOURCE = {"lignite": "Lignite", "coal": "Hard coal", "gas": "Natural gas", "oil": "Oil"}
 MUST_TAKE = ["nuclear", "ror", "reservoir", "biomass", "geothermal", "waste", "others", "coal_gas"]
@@ -48,6 +54,8 @@ FLOOR, CAP = -500.0, 4000.0
 CCGT = 0.55  # efficiency of the gas plant whose cost centres the trade response
 BINS = 8
 MUST_RUN_QUANTILE = 0.02  # share of capacity running in a month's quietest hours
+UNCURTAILED = 20.0  # EUR/MWh; above this, wind and solar have no reason to curtail
+ZERO_WIDTH = 0.5  # EUR/MWh; spread of the bids at zero
 
 
 # --- Inputs --------------------------------------------------------------------------------------
@@ -67,7 +75,6 @@ def inputs(mix: pd.DataFrame, forecasts: pd.DataFrame, prices: pd.Series, instal
     x["must_take"] = df[MUST_TAKE].sum(axis=1)
     fc = forecasts.reindex(df.index)
     expected = {c: fc[c].fillna(df[c]) if c in fc else df[c] for c in VARIABLE}  # what the market cleared on
-    x["variable"] = sum(expected.values())
     x["solar_fc"] = expected["solar"]
     x["wind_fc"] = expected["wind_onshore"] + expected["wind_offshore"]
     x["solar"] = df["solar"]
@@ -128,6 +135,7 @@ class Fleet:
     trade: np.ndarray  # line coefficients, then import and export response (MW) and its spread
     trade_limits: tuple[float, float]  # export and import limit, MW
     pumped_mw: float
+    level: dict[str, float]  # actual output per MWh of day-ahead forecast, for wind and solar
 
 
 def fleet(x: pd.DataFrame, eff: dict[str, np.ndarray], cfg: dict) -> Fleet:
@@ -140,7 +148,11 @@ def fleet(x: pd.DataFrame, eff: dict[str, np.ndarray], cfg: dict) -> Fleet:
         avail[f] = np.maximum(by_month.quantile(0.99).reindex(range(1, 13)).to_numpy(), 0.85 * share.quantile(0.995))
         must_run[f] = np.minimum(by_month.quantile(MUST_RUN_QUANTILE).reindex(range(1, 13)).to_numpy(), avail[f])
     limits = (float(x["trade"].quantile(0.002)), float(x["trade"].quantile(0.998)))
-    return Fleet(eff, avail, must_run, fit_trade(x, cfg), limits, float(x["storage"].abs().quantile(0.99)))
+    # The forecast runs a few percent above what wind and solar turned out to produce (more so for solar), while
+    # demand is built from actual output; unscaled, the gap would be a surplus at every sunny midday.
+    free = x["price"] > UNCURTAILED
+    level = {k: float(x.loc[free, k].sum() / x.loc[free, f"{k}_fc"].sum()) for k in ["wind", "solar"]}
+    return Fleet(eff, avail, must_run, fit_trade(x, cfg), limits, float(x["storage"].abs().quantile(0.99)), level)
 
 
 def trade_design(x: pd.DataFrame) -> np.ndarray:
@@ -173,16 +185,11 @@ def fit_trade(x: pd.DataFrame, cfg: dict) -> np.ndarray:
                          x_scale=scale).x
 
 
-def residual(x: pd.DataFrame) -> pd.Series:
-    """Demand left for thermal plants, trade and storage once must-take, wind and solar have run, MW."""
-    return x["demand"] - x["must_take"] - x["variable"]
-
-
-PARAMS = ["markup_lignite", "markup_coal", "markup_gas", "markup_oil", "noise", "noise_floor", "curtail",
-          "curtail_scale"]
-X0 = np.array([5.0, 5.0, 5.0, 10.0, 0.05, 5.0, 0.3, 20.0])
-LOWER = np.array([-40.0, -40.0, -40.0, -40.0, 0.0, 0.5, 0.0, 1.0])
-UPPER = np.array([80.0, 80.0, 80.0, 150.0, 0.8, 60.0, 1.0, 300.0])
+PARAMS = ["markup_lignite", "markup_coal", "markup_gas", "markup_oil", "noise", "noise_floor", "wind_curtail",
+          "solar_curtail", "curtail_scale", "wind_zero", "solar_zero"]
+X0 = np.array([5.0, 5.0, 5.0, 10.0, 0.05, 5.0, 0.3, 0.05, 50.0, 0.05, 0.02])
+LOWER = np.array([-40.0, -40.0, -40.0, -40.0, 0.0, 0.5, 0.0, 0.0, 2.0, 0.0, 0.0])
+UPPER = np.array([80.0, 80.0, 80.0, 150.0, 0.8, 60.0, 0.9, 0.9, 400.0, 0.5, 0.5])
 
 
 class Market:
@@ -193,7 +200,8 @@ class Market:
         m = x["month"].to_numpy() - 1
         self.demand = x["demand"].to_numpy()
         self.must_take = x["must_take"].to_numpy()
-        self.variable = x["variable"].to_numpy()
+        self.wind = x["wind_fc"].to_numpy() * fl.level["wind"]
+        self.solar = x["solar_fc"].to_numpy() * fl.level["solar"]
         self.cost, self.sigma, self.mr, self.flex = {}, {}, {}, {}
         markup = dict(zip(FUELS, theta[:4], strict=True))
         for f in FUELS:
@@ -206,16 +214,20 @@ class Market:
         self.ccgt = ccgt_cost(x, cfg)
         self.design = trade_design(x)
         self.trade, self.trade_limits = fl.trade, fl.trade_limits
-        self.response = cfg["demand_response"]
+        self.response, self.absorb = cfg["demand_response"], cfg["surplus_response"]
 
     def dispatch(self, p: np.ndarray) -> dict[str, np.ndarray]:
         out = {f: self.mr[f] + self.flex[f] * ndtr((p[:, None] - self.cost[f]) / self.sigma[f]).mean(axis=1)
                for f in FUELS}
-        curtail, scale = self.theta[6:8]
-        out["variable"] = self.variable * (1 - curtail * (1 - np.exp(np.minimum(p, 0) / scale)))
+        wind_curtail, solar_curtail, scale, wind_zero, solar_zero = self.theta[6:11]
+        gradual = 1 - np.exp(np.minimum(p, 0) / scale)
+        at_zero = ndtr(-p / ZERO_WIDTH)
+        out["wind"] = self.wind * np.maximum(1 - wind_zero * at_zero - wind_curtail * gradual, 0)
+        out["solar"] = self.solar * np.maximum(1 - solar_zero * at_zero - solar_curtail * gradual, 0)
         out["trade"] = np.clip(trade_at(self.design, self.ccgt, p, self.trade), *self.trade_limits)
-        r = self.response
+        r, a = self.response, self.absorb
         out["demand_response"] = r["mw"] * ndtr((p - r["price"]) / r["spread"])
+        out["surplus_response"] = -a["mw"] * ndtr((a["price"] - p) / a["spread"])
         return out
 
     def supply(self, p: np.ndarray) -> np.ndarray:
@@ -278,7 +290,7 @@ def fit(x: pd.DataFrame, fl: Fleet, cfg: dict, every: int = 6) -> np.ndarray:
     """
     s = x.iloc[::every]
     storage = s["storage"].to_numpy()
-    observed = {k: s[k].to_numpy() for k in FUELS + ["trade"]}
+    observed = {k: s[k].to_numpy() for k in FUELS + ["wind", "solar", "trade"]}
     price = s["price"].to_numpy()
     # Errors in proportion to the month's price level, so that 2022 does not drown out every other year.
     scale = 10.0 + 0.2 * s.groupby(["year", "month"])["price"].transform("mean").abs().to_numpy()
