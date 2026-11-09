@@ -7,7 +7,6 @@ const TECHS = { solar: "Solar", wind: "Wind" };
 const STEPS = [
   ["base", "Baseload forward"], ["profile", "Profile"], ["correlation", "Correlation"],
   ["cannibalisation", "Cannibalisation"], ["risk", "Risk premium"], ["balancing", "Balancing"],
-  ["clause", "Negative prices"],
 ];
 
 const eur = (v, d = 2) => `€${v.toFixed(d)}`;
@@ -69,8 +68,10 @@ function price(el) {
     <section><div class="chart" id="waterfall"></div></section>
     <div class="grid">
       <section><h2>By tenor</h2><div class="chart" id="tenors"></div></section>
-      <section><h2>Versus baseload</h2>${table(["", "€/MWh", "Generator P10–P90"], [
+      <section><h2>Structures</h2>${table(["", "€/MWh", "Generator P10–P90"], [
         ["Pay-as-produced", v.price.toFixed(2), v.price.toFixed(2)],
+        [`Non-negative, ${pct(1 - v.negative.volume_share)}`, v.negative.price.toFixed(2),
+          v.negative.price.toFixed(2)],
         [`Baseload, ${v.hedge[0].p50_mw.toFixed(1)} MW`, v.baseload.price.toFixed(2),
           `${v.baseload.p10.toFixed(2)}–${v.baseload.p90.toFixed(2)}`],
       ])}</section>
@@ -275,7 +276,8 @@ function options(el) {
   const v = scenario(), n = v.negative, sp = D.options.spark, b = D.options.battery;
   el.innerHTML = `
     <section><h2>Negative-price clause, €/MWh</h2><div class="stats">
-      ${stat("Clause value", eur(v.steps.clause))}
+      ${stat("Price per paid MWh", eur(n.price))}
+      ${stat("Output paid", pct(1 - n.volume_share))}
       ${stat("Put strip, simulated", eur(n.put_mc))}
       ${stat("Put strip, normal model", eur(n.put_normal))}
     </div></section>

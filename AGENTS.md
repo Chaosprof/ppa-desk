@@ -33,7 +33,10 @@
 - The daily correction has no steps or kinks, and the prior has no steps at month or year boundaries.
 - The simulation is unbiased, analogue days are equally weighted, and volume matches the full-load-hours target.
 - The risk premium makes the hedged P10 exactly zero.
-- The valuation decomposition adds up, and the hedge cuts risk.
+- Cannibalisation moves with the price level, so the hedge shrinks with the capture rate. Its slope error is the same in
+  every year and orthogonal to the level, so it raises the premium and leaves the expected price alone.
+- The valuation decomposition adds up to the all-hours price, and the hedge cuts risk. The negative-price clause is a
+  second price per paid MWh, never a step.
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
 - The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage

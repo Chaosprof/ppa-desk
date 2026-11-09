@@ -48,23 +48,51 @@ def test_solar_captures_less_than_baseload(sims):
 
 def test_decomposition_adds_up(sims):
     df = np.array([0.97, 0.94])
-    v = valuation.value(sims, df, np.array([-1.0, -2.0]), balancing=1.5, quantile=0.1)
+    v = valuation.value(sims, df, np.array([-1.0, -2.0]), np.array([0.5, 1.0]), balancing=1.5, quantile=0.1)
     assert sum(v["steps"].values()) == pytest.approx(v["price"], abs=0.02)
     assert v["steps"]["risk"] <= 0 and v["steps"]["balancing"] == -1.5
 
 
 def test_risk_premium_breaks_even_at_p90(sims):
-    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), balancing=0.0, quantile=0.1)
+    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), np.zeros(2), balancing=0.0, quantile=0.1)
     assert abs(v["risk"]["p10_hedged"]) < 0.01  # €m
 
 
 def test_hedge_reduces_risk(sims):
-    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), balancing=0.0, quantile=0.1)
+    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), np.zeros(2), balancing=0.0, quantile=0.1)
     assert v["risk"]["sd_hedged"] < 0.5 * v["risk"]["sd_open"]
     assert all(h["mw"] > 0 for h in v["hedge"])
 
 
-def test_negative_price_clause_is_worth_at_least_the_put_strip(sims):
-    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), balancing=0.0, quantile=0.1)
-    assert v["steps"]["clause"] >= 0
+def test_negative_price_clause_pays_more_per_mwh_on_less_volume(sims):
+    v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), np.zeros(2), balancing=0.0, quantile=0.1)
+    assert v["negative"]["price"] >= v["price"]
+    assert 0 <= v["negative"]["volume_share"] < 1
     assert v["negative"]["put_mc"] >= 0
+
+
+def test_hedge_shrinks_as_cannibalisation_takes_a_share_of_the_price(sims):
+    df = np.array([0.97, 0.94])
+    none = valuation.value(sims, df, np.zeros(2), np.zeros(2), balancing=0.0, quantile=0.1)
+    some = valuation.value(sims, df, np.array([-10.0, -20.0]), np.zeros(2), balancing=0.0, quantile=0.1)
+    for a, b, s, adj in zip(none["hedge"], some["hedge"], sims, [-10.0, -20.0], strict=True):
+        capture_price = s.revenue.mean() / s.volume.mean()
+        assert b["mw"] == pytest.approx(a["mw"] * (1 + adj / capture_price), rel=0.05)
+
+
+def test_slope_error_raises_the_premium_and_not_the_expected_price(sims):
+    df, adj = np.array([0.97, 0.94]), np.array([-5.0, -10.0])
+    sure = valuation.value(sims, df, adj, np.zeros(2), balancing=0.0, quantile=0.1)
+    unsure = valuation.value(sims, df, adj, np.array([4.0, 8.0]), balancing=0.0, quantile=0.1)
+    assert unsure["steps"]["cannibalisation"] == pytest.approx(sure["steps"]["cannibalisation"], abs=0.006)
+    assert unsure["steps"]["risk"] < sure["steps"]["risk"] - 0.5
+    assert [h["mw"] for h in unsure["hedge"]] == pytest.approx([h["mw"] for h in sure["hedge"]], rel=0.02)
+
+
+def test_slope_error_is_shared_by_every_year_and_orthogonal_to_the_level(sims):
+    z = sims[0].slope_error
+    assert z.mean() == pytest.approx(0, abs=1e-9) and z.std() == pytest.approx(1)
+    for s in sims:
+        assert s.slope_error is z
+        assert (z * s.level).mean() == pytest.approx(0, abs=1e-9)
+        assert (z * s.level * s.volume).mean() / s.volume.mean() == pytest.approx(0, abs=1e-9)

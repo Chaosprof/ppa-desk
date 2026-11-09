@@ -21,6 +21,17 @@
 - **Pre-2018 prices.** Fits for 2019–2021 train partly on the joint DE-AT-LU zone before the October 2018
   split. Minor; note it, or start those windows at the split.
 
+## Valuation
+
+- **Negative hours that grow with the build-out.** The simulation keeps about 550 a year through 2036. Tie the
+  frequency and the clause's unpaid share to the capacity path, and remove the overlap with cannibalisation.
+- **Hedge liquidity.** Every calendar year is sold at today's curve at no cost. Add a second curve factor and
+  price a stack-and-roll hedge beyond the liquid three years.
+- **Forward vol term structure.** One flat vol for ten years; integrate the measured vol by time to delivery
+  instead (log-sd for 2036: 0.64 flat against 0.46).
+- **Monthly seasonality.** The 36-month window reads the 2026 rally as seasonality, so from 2029 the curve has
+  Q3 above Q1. Detrend the monthly factors or take them from the quoted quarters. Under €0.5/MWh on the price.
+
 ## Fundamental model
 
 - **Fit stability.** The same setup gave 569 and 645 negative hours for 2023 in two runs. Refit from several

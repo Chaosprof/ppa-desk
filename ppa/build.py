@@ -49,17 +49,19 @@ def run(cfg: Config | None = None, log=print) -> dict:
     say("capture")
     monthly = capture.fleet(data.prices, data.generation, "M")
     annual = capture.fleet(data.prices, data.generation, "Y")
-    cannib, capture_out = {}, {}
+    cannib, cannib_sd, capture_out = {}, {}, {}
     for tech in TECHS:
         model = capture.fit(monthly, tech, pd.Period(cfg.window[1], "M"))
         today, future = capture.penetration_path(monthly, data.capacity, tech, cfg.window, cfg["capacity"][tech])
         cannib[tech] = capture.cannibalisation(model, today, future)
+        cannib_sd[tech] = capture.slope_error(model, today, future)
         def fleet_rate(share, model=model, today=today):  # generation-weighted over months
             return round(float((model(today.index.to_numpy(), share.to_numpy()) * today / today.sum()).sum()), 4)
 
         capture_out[tech] = {
             "backtest": capture.backtest(monthly, tech, BACKTEST_START),
             "beta": round(model.beta, 4),
+            "beta_se": round(model.se, 4),
             "today": fleet_rate(today),
             "projection": {str(y): fleet_rate(future[y]) for y in future},
         }
@@ -94,8 +96,9 @@ def run(cfg: Config | None = None, log=print) -> dict:
                                 cfg["yield"]["model_uncertainty"][tech], cfg["risk"]["paths"], cfg["risk"]["seed"])
             df = valuation.discount_factors(rates, np.array([y.tau for y in sims]))
             adj = valuation.cannibalisation_adj(sims, cannib[tech])
+            adj_sd = valuation.cannibalisation_adj(sims, cannib_sd[tech])
             scenarios[tech][site] = [
-                valuation.value(sims[:n], df[:n], adj[:n], balancing[tech], cfg["risk"]["volume_quantile"])
+                valuation.value(sims[:n], df[:n], adj[:n], adj_sd[:n], balancing[tech], cfg["risk"]["volume_quantile"])
                 for n in range(1, len(sims) + 1)
             ]
             if tech == "solar" and site == HEADLINE["solar"]:
@@ -119,7 +122,7 @@ def run(cfg: Config | None = None, log=print) -> dict:
             "futures_source": cfg["futures"]["source"],
             "built": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
             "sources": SOURCES,
-            "assumptions": _assumptions(cfg, rates, fwd),
+            "assumptions": _assumptions(cfg, rates, fwd, capture_out["solar"]),
         },
         "scenarios": scenarios,
         "yield": yields,
@@ -153,13 +156,15 @@ SOURCES = [
 ]
 
 
-def _assumptions(cfg: Config, rates: pd.Series, fwd: dict) -> list[dict]:
+def _assumptions(cfg: Config, rates: pd.Series, fwd: dict, solar: dict) -> list[dict]:
     r, b = cfg["risk"], cfg["balancing"]
     lo, hi = cfg.window
+    slope = f"{solar['beta']:.2f} ± {solar['beta_se']:.2f} per log share".replace("-", "−")
     return [
         {"name": "Shape window", "value": f"{lo:%b %Y} – {hi:%b %Y}"},
         {"name": "Forward vol", "value": f"{fwd['model_vol']:.0%}, realised over {fwd['window_months']} months"},
         {"name": "Risk premium", "value": f"P{round(100 - 100 * r['volume_quantile'])} break-even"},
+        {"name": "Solar cannibalisation slope", "value": slope},
         {"name": "Imbalance spread", "value": f"€{b['imbalance_spread']:.0f}/MWh × {b['single_asset_factor']}"},
         {"name": "Discount rate, 5y", "value": f"{rates.loc[5]:.2%}"},
         {"name": "Solar 2030", "value": f"{cfg['capacity']['solar']['2030']} GW"},
@@ -323,8 +328,7 @@ def memo(out: dict) -> str:
     meta = out["meta"]
     lines = [f"# German PPA pricing — {meta['valuation_date']}", ""]
     names = {"base": "Baseload forward", "profile": "Profile", "correlation": "Price–volume correlation",
-             "cannibalisation": "Cannibalisation", "risk": "Risk premium (P90)", "balancing": "Balancing",
-             "clause": "Negative-price clause"}
+             "cannibalisation": "Cannibalisation", "risk": "Risk premium (P90)", "balancing": "Balancing"}
     for tech, site in meta["headline"].items():
         n = len(meta["years"])
         v = out["scenarios"][tech][site][n - 1]
@@ -339,17 +343,21 @@ def memo(out: dict) -> str:
             "",
             f"**Fair pay-as-produced price: €{v['price']:.2f}/MWh** against a volume-weighted baseload forward "
             f"of €{steps['base']:.2f}. The shape and capture discount is €{-shape:.2f}, the risk premium "
-            f"€{-steps['risk']:.2f} and balancing €{-steps['balancing']:.2f}; the negative-price clause adds "
-            f"€{steps['clause']:+.2f}.",
+            f"€{-steps['risk']:.2f} and balancing €{-steps['balancing']:.2f}. Every MWh produced is paid.",
+            "",
+            f"**With a negative-price clause: €{v['negative']['price']:.2f}/MWh**, paid only in hours at or above "
+            f"zero, which is {1 - v['negative']['volume_share']:.0%} of the output. The price is per paid MWh, so "
+            f"it is higher on less volume; the puts themselves are worth €{v['negative']['put_mc']:.2f}.",
             "",
             "| Component | €/MWh |", "|---|---:|",
             *[f"| {names[k]} | {val:+.2f} |" for k, val in steps.items()],
             f"| **Fair price** | **{v['price']:.2f}** |",
             "",
             f"**Hedge:** sell {hedge[0]['mw']:.1f} MW of Cal-{hedge[0]['year'] % 100} baseload, stepping to "
-            f"{hedge[-1]['mw']:.1f} MW by Cal-{hedge[-1]['year'] % 100}. The hedge cuts lifetime P&L "
-            f"volatility from €{v['risk']['sd_open']:.1f}m to €{v['risk']['sd_hedged']:.1f}m; what remains is "
-            f"shape (€{v['risk']['sd_shape']:.1f}m) and volume (€{v['risk']['sd_volume']:.1f}m). "
+            f"{hedge[-1]['mw']:.1f} MW by Cal-{hedge[-1]['year'] % 100} as the capture rate falls. The hedge cuts "
+            f"lifetime P&L volatility from €{v['risk']['sd_open']:.1f}m to €{v['risk']['sd_hedged']:.1f}m; what "
+            f"remains is shape and cannibalisation (€{v['risk']['sd_shape']:.1f}m) and volume "
+            f"(€{v['risk']['sd_volume']:.1f}m). "
             f"In history ({bt['rows'][0]['year']}–{bt['rows'][-1]['year']}), the same rule on a one-year {tech} PPA "
             f"bought each October cut year-to-year P&L volatility from €{bt['sd']['open']:.1f}m to "
             f"€{bt['sd']['value_hedge']:.1f}m, against €{bt['sd']['volume_hedge']:.1f}m for a volume hedge.",
@@ -361,6 +369,8 @@ def memo(out: dict) -> str:
             f"leaving the generator a realised €{v['baseload']['p10']:.2f}–{v['baseload']['p90']:.2f}/MWh (P10–P90).",
             "",
         ]
+    slope = {t: f"{c['beta']:.2f} ± {c['beta_se']:.2f}".replace("-", "−")
+             for t, c in out["capture"].items() if t != "annual"}
     lines += [
         "## Assumptions",
         "",
@@ -368,6 +378,8 @@ def memo(out: dict) -> str:
         "- Shape: day-ahead prices over the 36 months before the valuation month.",
         f"- Forward vol {out['forwards']['model_vol']:.0%}: realised on calendar contracts over the last "
         f"{out['forwards']['window_months']} months of OMIP settlements (history since {out['forwards']['first']}).",
+        f"- Cannibalisation slope {slope['solar']} for solar and {slope['wind']} for wind, in capture rate per log "
+        "share of load; the standard error is simulated.",
         f"- {meta['paths']} joint price–weather paths; imbalance spread and capacity build-out "
         "as set in `inputs/market.toml`.",
         "",

@@ -47,6 +47,7 @@ LOOKBACK = 36
 class Model:
     alpha: np.ndarray  # month intercepts (12,)
     beta: float  # capture rate per unit of log penetration
+    se: float = 0.0  # standard error of beta
 
     def __call__(self, month: np.ndarray, share: np.ndarray) -> np.ndarray:
         return self.alpha[month - 1] + self.beta * np.log(share)
@@ -56,8 +57,12 @@ def fit(monthly: pd.DataFrame, tech: str, upto: pd.Period | None = None, lookbac
     m = monthly if upto is None else monthly[monthly.index <= upto]
     m = m.iloc[-lookback:]
     design = np.column_stack([np.eye(12)[m.index.month.to_numpy() - 1], np.log(m[f"{tech}_share"].to_numpy())])
-    coef, *_ = np.linalg.lstsq(design, m[f"{tech}_rate"].to_numpy(), rcond=None)
-    return Model(coef[:12], float(coef[12]))
+    rate = m[f"{tech}_rate"].to_numpy()
+    coef, *_ = np.linalg.lstsq(design, rate, rcond=None)
+    residual = rate - design @ coef
+    variance = residual @ residual / max(len(rate) - design.shape[1], 1)
+    se = np.sqrt(variance * np.linalg.pinv(design.T @ design)[12, 12])
+    return Model(coef[:12], float(coef[12]), float(se))
 
 
 def backtest(monthly: pd.DataFrame, tech: str, start: pd.Period) -> dict:
@@ -101,3 +106,12 @@ def cannibalisation(model: Model, today: pd.Series, future: pd.DataFrame) -> pd.
     months = today.index.to_numpy()
     base = model(months, today.to_numpy())
     return pd.DataFrame({y: model(months, future[y].to_numpy()) - base for y in future}, index=today.index)
+
+
+def slope_error(model: Model, today: pd.Series, future: pd.DataFrame) -> pd.DataFrame:
+    """One standard error of the slope as a capture-rate change, by month and delivery year.
+
+    The slope is the one number that turns a capacity path into a capture rate, and 36 months pin it
+    down only loosely. Its error is the same in every delivery year and grows with the build-out.
+    """
+    return cannibalisation(Model(np.zeros(12), model.se), today, future)

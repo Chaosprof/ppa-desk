@@ -93,6 +93,8 @@ class YearSim:
     hours: int
     base: float  # HPFC baseload average
     tau: float  # years from valuation to mid-delivery
+    level: np.ndarray  # calendar-level shock L_y, mean one
+    slope_error: np.ndarray  # standard normal, the same in every year: error in the cannibalisation slope
     volume: np.ndarray  # MWh
     revenue: np.ndarray  # sum G*P, EUR
     spot: np.ndarray  # sum P over hours: EUR per MW of baseload
@@ -124,6 +126,12 @@ def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray,
     level /= level.mean(axis=0)  # moment-match: the level shock adds no sample bias
     model_error = 1 + model_sd * rng.standard_normal(paths)
     target_flh = rng.choice(flh, size=(paths, len(years))) * model_error[:, None]
+    # Its own stream, so it leaves every other draw as it was; made orthogonal to each year's level and
+    # level x volume, so an uncertain slope moves the risk and not the expected price.
+    slope_error = np.random.default_rng([seed, 1]).standard_normal(paths)
+    basis = np.column_stack([np.ones(paths), level, level * target_flh])
+    slope_error -= basis @ np.linalg.lstsq(basis, slope_error, rcond=None)[0]
+    slope_error /= slope_error.std()
 
     out = []
     for j, year in enumerate(years):
@@ -157,6 +165,7 @@ def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray,
         sd = P.std(axis=0)
         out.append(YearSim(
             year=year, hours=len(idx), base=float(F.mean()), tau=float(tau[j]),
+            level=level[:, j], slope_error=slope_error,
             volume=G.sum(axis=1), revenue=(G * P).sum(axis=1), spot=P.sum(axis=1),
             volume_pos=(G * pos).sum(axis=1), revenue_pos=(G * P * pos).sum(axis=1),
             revenue_det=P @ g_mean, volume_det_pos=pos @ g_mean, revenue_det_pos=(P * pos) @ g_mean,
