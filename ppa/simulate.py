@@ -6,7 +6,7 @@ Prices:  P_h = L_y * (F_h + D_h + M_h * du_h) - (D_h + dn_h)
     D_h  expected negative part of the price for the hour's cell (shape.down), kept out of the level shock
     du_h positive part of a recent historical price relative to its month level, minus its cell mean
     dn_h negative part of the same price in EUR/MWh, minus its cell mean (does not scale with level)
-    L_y  calendar-level shock, one-factor lognormal martingale with the forward vol
+    L_y  calendar-level shock, one-factor lognormal martingale; each year's vol follows its time to delivery
 
 Generation: site capacity factor from ERA5 on the *same* historical day as z_h, so the joint
 behaviour of weather and price (sunny noon -> low price) is resampled rather than assumed.
@@ -18,6 +18,7 @@ per-path model error, so volume risk reflects long-run weather variability.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -111,19 +112,36 @@ class YearSim:
     profile_value: float  # sum E[G]*F
     put_normal: float  # sum E[G] * Bachelier put(F, sd(P)) at strike 0
     monthly_volume: np.ndarray  # (12,) expected MWh by month
+    monthly_volume_pos: np.ndarray  # (12,) expected MWh in hours with P >= 0 by month
     monthly_base: np.ndarray  # (12,) HPFC baseload by month
     daily_spread: np.ndarray | None  # (paths, days) 2h battery cycle value, first year only
 
 
-def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray, valuation: dt.date, capacity_mw: float,
-        forward_vol: float, model_sd: float, paths: int, seed: int) -> list[YearSim]:
-    rng = np.random.default_rng(seed)
+Vol = Callable[[np.ndarray], np.ndarray]  # forward vol by years to delivery start
+
+
+def level_shocks(rng: np.random.Generator, years: list[int], valuation: dt.date, vol: Vol, paths: int,
+                 step: float = 1 / 12) -> tuple[np.ndarray, np.ndarray]:
+    """Calendar-level shocks (paths, years) with mean one, and each year's time to mid-delivery.
+
+    One Brownian path moves every calendar year, so levels move together. At each moment a year moves with
+    the vol of a contract that far from delivery (`vol`, by years to delivery start): little while it is far
+    out and more as it approaches, the Samuelson effect. In delivery it keeps the front vol.
+    """
+    start = np.array([(dt.date(y, 1, 1) - valuation).days / 365.25 for y in years])
     tau = np.array([(dt.date(y, 7, 1) - valuation).days / 365.25 for y in years])
-    # One Brownian path per scenario sampled at mid-year: calendar levels move together.
-    dW = rng.standard_normal((paths, len(years))) * np.sqrt(np.diff(np.concatenate([[0.0], tau])))
-    W = np.cumsum(dW, axis=1)
-    level = np.exp(forward_vol * W - 0.5 * forward_vol**2 * tau)
-    level /= level.mean(axis=0)  # moment-match: the level shock adds no sample bias
+    t = np.arange(0.0, tau.max(), step)[:, None]
+    exposed = np.clip(tau - t, 0.0, step)  # (steps, years): how long each year is still open within the step
+    loading = vol(np.maximum(start - t, 0.0)) * np.sqrt(exposed)
+    log_level = rng.standard_normal((paths, len(t))) @ loading
+    level = np.exp(log_level - 0.5 * (loading**2).sum(axis=0))
+    return level / level.mean(axis=0), tau  # moment-match: the level shock adds no sample bias
+
+
+def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray, valuation: dt.date, capacity_mw: float,
+        vol: Vol, model_sd: float, paths: int, seed: int) -> list[YearSim]:
+    rng = np.random.default_rng(seed)
+    level, tau = level_shocks(rng, years, valuation, vol, paths)
     model_error = 1 + model_sd * rng.standard_normal(paths)
     target_flh = rng.choice(flh, size=(paths, len(years))) * model_error[:, None]
     # Its own stream, so it leaves every other draw as it was; made orthogonal to each year's level and
@@ -173,7 +191,9 @@ def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray,
             put=(G * np.maximum(-P, 0)).sum(axis=1),
             negative_hours=(~pos).sum(axis=1),
             profile_value=float(g_mean @ F), put_normal=float(g_mean @ bachelier_put(F, 0.0, sd)),
-            monthly_volume=pd.Series(g_mean).groupby(month).sum().to_numpy(), monthly_base=monthly_base,
+            monthly_volume=pd.Series(g_mean).groupby(month).sum().to_numpy(),
+            monthly_volume_pos=pd.Series((G * pos).mean(axis=0)).groupby(month).sum().to_numpy(),
+            monthly_base=monthly_base,
             daily_spread=battery_spread(P, day_of, len(future_days)) if j == 0 else None,
         ))
     return out

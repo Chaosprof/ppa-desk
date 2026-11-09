@@ -48,6 +48,35 @@ def market():
     return mk, x, fl
 
 
+def test_fuel_and_carbon_pass_through_within_the_fleet(market):
+    """Dearer gas, coal or carbon never lowers the price, and moves it by no more than the least efficient
+    plant's heat rate or emissions per MWh. Wind and solar capture prices move too. Gas is reported as it is
+    quoted, per gross MWh, of which a plant uses the net part."""
+    from ppa import fairvalue
+
+    _, x, fl = market
+    s = fairvalue.sensitivities(x, fl, fm.X0, CFG)
+    worst = {f: 1 / fl.eff[f].min() for f in fm.FUELS}
+    assert 0 < s.at["gas", "base"] <= worst["gas"] / fm.GAS_NET_PER_GROSS
+    assert 0 < s.at["coal", "base"] * fm.MWH_PER_TONNE_COAL <= worst["coal"]
+    assert 0 < s.at["carbon", "base"] <= max(CFG["emissions"][f] * worst[f] for f in fm.FUELS)
+    assert s.at["gas", "input"] == pytest.approx(35.0 * fm.GAS_NET_PER_GROSS) and s.at["carbon", "input"] == 70.0
+    assert s.at["coal", "input"] == pytest.approx(15.0 * fm.MWH_PER_TONNE_COAL)
+    assert (s[["solar", "wind"]] > 0).all().all()
+
+
+def test_gas_is_priced_per_net_mwh():
+    """Gas is quoted per gross MWh and burnt at net efficiencies, so the model's gas is the quote over 0.9."""
+    months = pd.date_range("2025-01-01", periods=2, freq="MS")
+    usd = pd.Series(1.1, index=pd.date_range("2025-01-01", "2025-02-28", freq="D"))
+    fuels = {"gas": pd.Series(10.0, index=months), "coal": pd.Series(110.0, index=months),
+             "oil": pd.Series(70.0, index=months), "usd": usd}
+    p = fm.fuel_prices(fuels)
+    quoted = 10.0 * fm.MMBTU_PER_MWH / 1.1  # EUR/MWh gross, as TTF trades
+    assert p["gas"].to_numpy() == pytest.approx(quoted / 0.9)
+    assert p["coal"].to_numpy() == pytest.approx(100.0 / fm.MWH_PER_TONNE_COAL)
+
+
 def test_clearing_meets_demand(market):
     mk, x, _ = market
     p = mk.clear(np.zeros(len(x)))

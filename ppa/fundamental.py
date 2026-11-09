@@ -48,7 +48,7 @@ from scipy.special import ndtr
 
 from .hours import TZ
 
-VERSION = 3  # bump when the model changes, so build re-runs the cached backtest
+VERSION = 4  # bump when the model changes, so build re-runs the cached backtest
 FUELS = ["lignite", "coal", "gas", "oil"]
 PLANT_SOURCE = {"lignite": "Lignite", "coal": "Hard coal", "gas": "Natural gas", "oil": "Oil"}
 MUST_TAKE = ["nuclear", "ror", "reservoir", "biomass", "geothermal", "waste", "others", "coal_gas"]
@@ -56,7 +56,8 @@ VARIABLE = ["solar", "wind_onshore", "wind_offshore"]
 OBSERVED = MUST_TAKE + FUELS + VARIABLE + ["pumped", "pumping", "trade"]
 
 MMBTU_PER_MWH = 3.412
-MWH_PER_TONNE_COAL = 6.978  # 6,000 kcal/kg
+GAS_NET_PER_GROSS = 0.9  # gas trades per MWh of gross calorific value; a plant's efficiency counts the net 90% of it
+MWH_PER_TONNE_COAL = 6.978  # 6,000 kcal/kg net
 MWH_PER_BARREL = 1.70
 FLOOR, CAP = -500.0, 4000.0
 CCGT = 0.55  # efficiency of the gas plant whose cost centres the trade response
@@ -113,10 +114,14 @@ def inputs(mix: pd.DataFrame, forecasts: pd.DataFrame, prices: pd.Series, instal
 
 
 def fuel_prices(fuels: dict[str, pd.Series]) -> pd.DataFrame:
-    """Monthly gas, coal and oil in EUR/MWh thermal, from the IMF USD series and the monthly mean exchange rate."""
+    """Monthly gas, coal and oil in EUR/MWh thermal, from the IMF USD series and the monthly mean exchange rate.
+
+    Gas is restated per MWh of net calorific value, the basis of plant efficiencies and emission factors, so
+    it is the quoted price over GAS_NET_PER_GROSS.
+    """
     usd = fuels["usd"].resample("MS").mean()
     return pd.DataFrame({
-        "gas": fuels["gas"] * MMBTU_PER_MWH / usd,
+        "gas": fuels["gas"] * MMBTU_PER_MWH / usd / GAS_NET_PER_GROSS,
         "coal": fuels["coal"] / usd / MWH_PER_TONNE_COAL,
         "oil": fuels["oil"] / usd / MWH_PER_BARREL,
     }).dropna()

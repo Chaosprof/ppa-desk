@@ -9,9 +9,12 @@ const STEPS = [
   ["cannibalisation", "Cannibalisation"], ["risk", "Risk premium"], ["balancing", "Balancing"],
 ];
 
+const INPUTS = { gas: "Gas, €/MWh", carbon: "Carbon, €/t", coal: "Coal, €/t" };
+
 const eur = (v, d = 2) => `€${v.toFixed(d)}`;
 const pct = (v) => `${Math.round(100 * v)}%`;
 const signed = (v) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(2)}`;
+const slope = (m) => `${signed(m.beta)} ± ${m.beta_se.toFixed(2)}`;
 const date = (d) => new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const yy = (year) => `’${String(year).slice(2)}`;
 
@@ -128,9 +131,8 @@ function curve(el) {
     </div>
     <section><h2>Next calendar year since ${f.first.slice(0, 4)}, €/MWh</h2><div class="chart" id="history"></div></section>
     <div class="grid">
-      <section><h2>Realised volatility by time to delivery</h2><div class="chart" id="term"></div></section>
+      <section><h2>Realised volatility by time to delivery, last ${f.window_months} months</h2><div class="chart" id="term"></div></section>
       <section><div class="stats">
-        ${stat(`Forward vol, last ${f.window_months} months`, pct(f.model_vol))}
         ${stat("Next and third year correlation", f.corr_1_3.toFixed(2))}
       </div></section>
     </div>`;
@@ -179,7 +181,7 @@ function curve(el) {
     xFmt: (i, tip) => (tip ? date(f.next_calendar.dates[i]) : f.next_calendar.dates[i].slice(0, 4)),
     yFmt: (y, tip) => (tip ? eur(y) : y.toFixed(0)),
   });
-  bars($("term"), f.term.map((b) => ({ label: b.bucket, value: b.vol })), { valueFmt: pct });
+  bars($("term"), f.term_recent.map((b) => ({ label: b.bucket, value: b.vol })), { valueFmt: pct });
 }
 
 function capture(el) {
@@ -195,7 +197,11 @@ function capture(el) {
       <section><h2>Solar, one month ahead</h2><div class="chart" id="backtest"></div></section>
       <section><h2>Mean absolute error</h2>${table(["", "Model", "Seasonal naive"],
         ["solar", "wind"].map((t) => [TECHS[t], D.capture[t].backtest.mae.toFixed(3), D.capture[t].backtest.naive_mae.toFixed(3)]))}</section>
-    </div>`;
+    </div>
+    <section><h2>Slope by months of history, and the ${D.meta.years.length}-year price, €/MWh</h2>${table(
+      ["", "Solar slope", "Solar price", "Wind slope", "Wind price"],
+      D.capture.solar.windows.map((s, i) => [s.months, slope(s), s.price.toFixed(2),
+        slope(D.capture.wind.windows[i]), D.capture.wind.windows[i].price.toFixed(2)]))}</section>`;
   lines($("rates"), years, [
     { name: "Solar", color: "var(--accent)", values: rate("solar") },
     { name: "Wind", color: "var(--ink)", values: rate("wind") },
@@ -248,6 +254,10 @@ function fairValue(el) {
       ${stat("Gap", signed(t.gap))}
     </div></section>
     <section><h2>Next calendar year at each month end, €/MWh</h2><div class="chart" id="fv"></div></section>
+    <section><h2>${t.contract} fair value per unit of fuel and carbon, €/MWh</h2>${table(
+      ["", "Input", "Baseload", "Solar", "Wind"],
+      f.sensitivity.map((r) => [INPUTS[r.input], r.level.toFixed(2), signed(r.base), signed(r.solar), signed(r.wind)]))}
+    </section>
     <div class="grid">
       <section><h2>Gap trade, cumulative €/MWh</h2><div class="chart" id="fvpnl"></div></section>
       <section><h2>Next month's move</h2>${table(["", "Gap", "Momentum", "Long"], [

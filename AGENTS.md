@@ -32,11 +32,16 @@
 - The HPFC reprices every quote. Independent quotes reprice to 1e-8, implied ones to within rounding.
 - The daily correction has no steps or kinks, and the prior has no steps at month or year boundaries.
 - The simulation is unbiased, analogue days are equally weighted, and volume matches the full-load-hours target.
+  Level shocks have mean one and the variance of the vol integrated over each year's time to delivery.
+- A trend inside the window does not change the curve's monthly seasonality.
 - The risk premium makes the hedged P10 exactly zero.
 - Cannibalisation moves with the price level, so the hedge shrinks with the capture rate. Its slope error is the same in
   every year and orthogonal to the level, so it raises the premium and leaves the expected price alone.
 - The valuation decomposition adds up to the all-hours price, and the hedge cuts risk. The negative-price clause is a
-  second price per paid MWh, never a step.
+  second price per paid MWh, never a step, and a shrinking paid share leaves the all-hours deal untouched.
+  Shape risk under its own hedge and volume risk at the forward curve each stay within the hedged risk.
+- Capture regressions recover a known slope within its standard error, and a shorter window refits on the trailing
+  months alone.
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
 - The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage
@@ -45,7 +50,8 @@
   thermal output is flat within each day, stays within the fleet, and widens the daily price range.
   The trade fit recovers a known response. Fair values use only data published before their date, replay
   the twelve months before it, and drop nuclear once closed; a contract's next move never crosses its expiry.
-  EEX carbon reports parse whatever their yearly layout.
+  EEX carbon reports parse whatever their yearly layout. Dearer fuel or carbon never lowers the price, and moves it by
+  no more than the least efficient plant's heat rate or emissions. Gas is quoted per gross MWh and costed per net MWh.
 
 ## Front end
 

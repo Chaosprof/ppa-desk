@@ -7,6 +7,7 @@ taken within each contract, never across a roll, and labelled with time to deliv
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -49,11 +50,12 @@ def term_structure(rets: pd.DataFrame, since: pd.Timestamp | None = None) -> lis
             for lo, hi, label in BUCKETS if ((cal["tau"] >= lo) & (cal["tau"] < hi)).sum() > 20]
 
 
-def model_vol(rets: pd.DataFrame, end: pd.Timestamp, months: int) -> float:
-    """The simulation's single forward vol: calendar contracts up to three years out, recent window."""
-    window = rets[(rets["kind"] == "Cal") & (rets["date"] > end - pd.DateOffset(months=months))
-                  & (rets["date"] <= end) & (rets["tau"] < 3)]
-    return vol(window["ret"])
+def vol_curve(term: list[dict]) -> Callable[[np.ndarray], np.ndarray]:
+    """The simulation's forward vol by years to delivery: flat within each bucket of `term` and beyond the last."""
+    edge = {label: lo for lo, _, label in BUCKETS}
+    lo = np.array([edge[b["bucket"]] for b in term])
+    level = np.array([b["vol"] for b in term])
+    return lambda tau: level[np.clip(np.searchsorted(lo, tau, side="right") - 1, 0, len(level) - 1)]
 
 
 def next_calendar(history: pd.DataFrame) -> pd.Series:
@@ -125,7 +127,6 @@ def summary(history: pd.DataFrame, valuation: dt.date, months: int) -> dict:
     return {
         "first": history["date"].min().date().isoformat(),
         "days": int(clean(history)["date"].nunique()),
-        "model_vol": round(model_vol(rets, end, months), 4),
         "window_months": months,
         "term": term_structure(rets),
         "term_recent": term_structure(rets, end - pd.DateOffset(months=months)),

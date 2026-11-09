@@ -95,6 +95,34 @@ def run(x: pd.DataFrame, nuclear: pd.Series, installed: pd.DataFrame, fuels: dic
     return out
 
 
+# Central-difference bumps: column, size in the column's unit, and units of the quoted price per column unit.
+BUMPS = {
+    "gas": ("fuel_gas", 5.0 / fm.GAS_NET_PER_GROSS, fm.GAS_NET_PER_GROSS),  # EUR/MWh as quoted (gross), held net
+    "carbon": ("co2", 10.0, 1.0),  # EUR/t
+    "coal": ("fuel_coal", 10.0 / fm.MWH_PER_TONNE_COAL, fm.MWH_PER_TONNE_COAL),  # EUR/t, held in EUR/MWh thermal
+}
+
+
+def sensitivities(s: pd.DataFrame, fl: fm.Fleet, theta: np.ndarray, cfg: dict) -> pd.DataFrame:
+    """What one unit of gas (EUR/MWh), carbon (EUR/t) and coal (EUR/t) moves, in EUR/MWh of power.
+
+    The scenario `s` is cleared again with each input bumped up and down. Per input: its level in `s`, and the
+    change in the baseload price and in the solar and wind capture prices. The capture prices move less than
+    baseload when wind and solar produce in hours that fuel does not set.
+    """
+    def clear(column: str | None = None, shift: float = 0.0) -> pd.Series:
+        b = s if column is None else s.assign(**{column: s[column] + shift})
+        price, _ = fm.solve(fm.Market(b, fl, theta, cfg), b, fl, cfg)
+        weighted = {k: float((price * b[f"{k}_fc"]).sum() / b[f"{k}_fc"].sum()) for k in ["solar", "wind"]}
+        return pd.Series({"base": float(price.mean()), **weighted})
+
+    rows = {}
+    for name, (column, size, per_unit) in BUMPS.items():
+        slope = (clear(column, size) - clear(column, -size)) / (2 * size * per_unit)
+        rows[name] = pd.concat([pd.Series({"input": float(s[column].mean()) * per_unit}), slope])
+    return pd.DataFrame(rows).T
+
+
 def next_change(history: pd.DataFrame, fv: pd.DataFrame) -> pd.Series:
     """Change in each row's contract from its date to the next month end on which it still trades."""
     wide = history.pivot_table(index="date", columns="contract", values="price").sort_index()

@@ -17,7 +17,26 @@ def sims(curve, shape, synthetic_prices, window):
     cf = pd.Series(0.8 * sun, index=idx)
     pool = simulate.pool(synthetic_prices, cf, window)
     return simulate.run(curve, shape, pool, [2027, 2028], np.full(20, 1000.0), dt.date(2026, 10, 30),
-                        100, forward_vol=0.3, model_sd=0.05, paths=300, seed=2)
+                        100, vol=lambda tau: np.full_like(tau, 0.3), model_sd=0.05, paths=300, seed=2)
+
+
+def test_flat_vol_gives_the_lognormal_level(curve):
+    years, valuation = [2027, 2030, 2036], dt.date(2026, 10, 30)
+    flat = lambda t: np.full_like(t, 0.2)  # noqa: E731
+    level, tau = simulate.level_shocks(np.random.default_rng(0), years, valuation, flat, 20000)
+    assert level.mean(axis=0) == pytest.approx(1.0)
+    assert np.log(level).std(axis=0) == pytest.approx(0.2 * np.sqrt(tau), rel=0.03)
+    assert np.corrcoef(np.log(level).T)[0, 2] == pytest.approx(np.sqrt(tau[0] / tau[2]), abs=0.03)  # one Brownian path
+
+
+def test_far_years_move_less_while_they_are_far():
+    """Vol 30% in the last year before delivery and 10% before that: a far year collects mostly the low vol."""
+    years, valuation = [2027, 2036], dt.date(2026, 10, 30)
+    vol = lambda t: np.where(t < 1, 0.3, 0.1)  # noqa: E731
+    level, tau = simulate.level_shocks(np.random.default_rng(0), years, valuation, vol, 20000)
+    far = np.sqrt(0.1**2 * (tau[1] - 1.5) + 0.3**2 * 1.5)  # the final year and the half-year in delivery at 30%
+    assert np.log(level[:, 1]).std() == pytest.approx(far, rel=0.03)
+    assert np.log(level[:, 1]).std() < 0.3 * np.sqrt(tau[1]) / 1.5
 
 
 def test_analogue_days_are_drawn_with_equal_weight(synthetic_prices, window):
@@ -64,11 +83,33 @@ def test_hedge_reduces_risk(sims):
     assert all(h["mw"] > 0 for h in v["hedge"])
 
 
+def test_shape_and_volume_risk_alone_stay_within_the_hedged_risk(sims):
+    """Shape under its own hedge and volume at the forward curve are each part of what the deal's hedge leaves;
+    the rest is hourly price and volume moving together."""
+    v = valuation.value(sims, np.array([0.97, 0.94]), np.array([-1.0, -2.0]), np.array([0.5, 1.0]),
+                        balancing=0.0, quantile=0.1)
+    r = v["risk"]
+    assert 0 < r["sd_shape"] <= 1.05 * r["sd_hedged"] and 0 < r["sd_volume"] <= 1.05 * r["sd_hedged"]
+    assert np.hypot(r["sd_shape"], r["sd_volume"]) <= 1.05 * r["sd_hedged"]
+
+
 def test_negative_price_clause_pays_more_per_mwh_on_less_volume(sims):
     v = valuation.value(sims, np.array([0.97, 0.94]), np.zeros(2), np.zeros(2), balancing=0.0, quantile=0.1)
     assert v["negative"]["price"] >= v["price"]
     assert 0 <= v["negative"]["volume_share"] < 1
     assert v["negative"]["put_mc"] >= 0
+
+
+def test_fewer_paid_hours_shrink_the_paid_volume_and_not_the_all_hours_deal(sims):
+    df, adj = np.array([0.97, 0.94]), np.array([-5.0, -10.0])
+    today = valuation.value(sims, df, adj, np.zeros(2), balancing=0.0, quantile=0.1)
+    later = valuation.value(sims, df, adj, np.zeros(2), balancing=0.0, quantile=0.1,
+                            paid_adj=np.array([-2.0, -4.0]), paid=np.array([0.95, 0.9]))
+    assert later["price"] == today["price"] and later["hedge"] == today["hedge"]
+    assert later["negative"]["volume_share"] > today["negative"]["volume_share"]
+    assert later["negative"]["volume_share_last"] > later["negative"]["volume_share"]
+    assert later["negative"]["put_mc"] >= today["negative"]["put_mc"]
+    assert later["negative"]["price"] > today["negative"]["price"]  # less of the capture drop is in the paid price
 
 
 def test_hedge_shrinks_as_cannibalisation_takes_a_share_of_the_price(sims):

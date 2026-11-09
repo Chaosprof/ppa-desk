@@ -17,6 +17,8 @@ volume risk together.
 
 The headline deal pays for every MWh produced. The negative-price clause is a second structure: only
 output in hours at or above zero is paid, so its price is per paid MWh and is not a step of the first.
+Its paid volume shrinks with the build-out, and its cannibalisation is that of the paid hours alone:
+the part of the capture-rate drop that comes from more negative hours is in the volume, not the price.
 """
 
 from __future__ import annotations
@@ -36,12 +38,23 @@ def discount_factors(rates: pd.Series, tau: np.ndarray) -> np.ndarray:
     return np.exp(-r * tau)
 
 
-def cannibalisation_adj(sims: list[YearSim], delta_rate: pd.DataFrame) -> np.ndarray:
-    """EUR/MWh per year: capture-rate change x monthly base, weighted by expected monthly volume."""
+def cannibalisation_adj(sims: list[YearSim], delta_rate: pd.DataFrame, paid: bool = False) -> np.ndarray:
+    """EUR/MWh per year: capture-rate change x monthly base, weighted by expected monthly volume
+    (`paid`: the volume in hours at or above zero)."""
     out = []
     for s in sims:
         d = delta_rate[s.year].reindex(range(1, 13)).to_numpy()
-        out.append(float((d * s.monthly_base * s.monthly_volume).sum() / s.monthly_volume.sum()))
+        volume = s.monthly_volume_pos if paid else s.monthly_volume
+        out.append(float((d * s.monthly_base * volume).sum() / volume.sum()))
+    return np.array(out)
+
+
+def paid_volume(sims: list[YearSim], factor: pd.DataFrame) -> np.ndarray:
+    """Per year: paid volume relative to the simulated one, from the monthly `factor` weighted by paid volume."""
+    out = []
+    for s in sims:
+        f = factor[s.year].reindex(range(1, 13)).to_numpy()
+        out.append(float((f * s.monthly_volume_pos).sum() / s.monthly_volume_pos.sum()))
     return np.array(out)
 
 
@@ -78,10 +91,10 @@ class Deal:
 
 
 def _deal(sims: list[YearSim], df: np.ndarray, cann: np.ndarray, balancing: float, clause: bool,
-          risk: str = "all") -> Deal:
+          risk: str = "all", paid: np.ndarray | float = 1.0) -> Deal:
     """risk="shape": expected generation against simulated prices; "volume": simulated generation
     against the forward curve and the expected cannibalisation (so the hedge has nothing to do);
-    "all": both."""
+    "all": both. Under the clause, `paid` scales each year's paid volume and its revenue."""
     spot_fwd = np.array([s.hours * s.base for s in sims])
     spot = np.column_stack([s.spot for s in sims])
     if risk == "shape":
@@ -95,6 +108,8 @@ def _deal(sims: list[YearSim], df: np.ndarray, cann: np.ndarray, balancing: floa
     else:
         vol = np.column_stack([s.volume_pos if clause else s.volume for s in sims])
         rev = np.column_stack([s.revenue_pos if clause else s.revenue for s in sims])
+    if clause:
+        vol, rev = vol * paid, rev * paid
     cash = rev + (cann - balancing) * vol
     return Deal(vol, cash, spot, spot_fwd, df)
 
@@ -118,8 +133,17 @@ def _histogram(series: dict[str, np.ndarray], bins: int = 36) -> dict:
 
 
 def value(sims: list[YearSim], df: np.ndarray, adj: np.ndarray, adj_sd: np.ndarray, balancing: float,
-          quantile: float) -> dict:
-    """Everything the desk needs for one technology, site and tenor (= len(sims))."""
+          quantile: float, paid_adj: np.ndarray | None = None, paid_adj_sd: np.ndarray | None = None,
+          paid: np.ndarray | None = None) -> dict:
+    """Everything the desk needs for one technology, site and tenor (= len(sims)).
+
+    `adj` and `adj_sd` are the cannibalisation and its slope error over all hours; the `paid_` pair is the
+    same over hours at or above zero, and `paid` each year's paid volume relative to the simulated one.
+    Left out, the clause takes the all-hours cannibalisation on today's paid volume.
+    """
+    paid_adj = adj if paid_adj is None else paid_adj
+    paid_adj_sd = adj_sd if paid_adj_sd is None else paid_adj_sd
+    paid = np.ones(len(sims)) if paid is None else paid
     volume = np.column_stack([s.volume for s in sims])
     ev = df * volume.mean(0)
     w = ev / ev.sum()
@@ -137,21 +161,27 @@ def value(sims: list[YearSim], df: np.ndarray, adj: np.ndarray, adj_sd: np.ndarr
 
     pnl_hedged = deal.pnl(fair, q)
     pnl_open = deal.pnl(fair, None)
-    sd_shape = float(_deal(sims, df, cann, balancing, clause=False, risk="shape").pnl(fair, q).std())
+    # Each part on its own. Expected generation earns the profile's price, not the correlation-reduced one,
+    # so it carries more of the level and needs its own hedge; under the deal's it would be left part open.
+    shape = _deal(sims, df, cann, balancing, clause=False, risk="shape")
+    sd_shape = float(shape.pnl(fair, shape.hedge(fair)).std())
     sd_volume = float(_deal(sims, df, cann, balancing, clause=False, risk="volume").pnl(fair, q).std())
 
     # Negative-price clause: the same plant, paid only in hours at or above zero.
-    paid = _deal(sims, df, cann, balancing, clause=True)
-    k1 = paid.expected_price()
-    fair_paid = k1 - _premium(paid, k1, paid.hedge(k1), quantile)
+    clause = _deal(sims, df, cannibalisation_paths(sims, paid_adj, paid_adj_sd), balancing, clause=True, paid=paid)
+    k1 = clause.expected_price()
+    fair_paid = k1 - _premium(clause, k1, clause.hedge(k1), quantile)
+    unpaid_then = volume.mean(0) - clause.volume.mean(0)
+    unpaid_now = volume.mean(0) - np.array([s.volume_pos.mean() for s in sims])
+    more = np.divide(unpaid_then, unpaid_now, out=np.ones(len(sims)), where=unpaid_now > 0)  # puts grow with it
 
     # Baseload-shaped alternative: the generator sells P50-equivalent MW of baseload at the forward
     # and keeps shape and volume risk on every MWh produced.
     q_flat = deal.volume.mean(0) / np.array([s.hours for s in sims])
     flat = (deal.cash + q_flat * (deal.spot_fwd - deal.spot)) @ df / (deal.volume @ df)
     hours_w = df * np.array([s.hours for s in sims])
-    put = float((df * np.array([s.put.mean() for s in sims])).sum() / ev.sum())
-    put_normal = float((df * np.array([s.put_normal for s in sims])).sum() / ev.sum())
+    put = float((df * more * np.array([s.put.mean() for s in sims])).sum() / ev.sum())
+    put_normal = float((df * more * np.array([s.put_normal for s in sims])).sum() / ev.sum())
 
     m = 1e6
     return {
@@ -170,7 +200,7 @@ def value(sims: list[YearSim], df: np.ndarray, adj: np.ndarray, adj_sd: np.ndarr
         "risk": {
             "sd_open": round(float(pnl_open.std()) / m, 3),
             "sd_hedged": round(float(pnl_hedged.std()) / m, 3),
-            "sd_shape": round(sd_shape / m, 3),  # standalone; shape and volume co-move, so no sum
+            "sd_shape": round(sd_shape / m, 3),  # each part alone; the rest is price and volume moving together
             "sd_volume": round(sd_volume / m, 3),
             "p10_hedged": round(float(np.quantile(pnl_hedged, 0.10)) / m, 3),
             "es95_hedged": round(float(pnl_hedged[pnl_hedged <= np.quantile(pnl_hedged, 0.05)].mean()) / m, 3),
@@ -186,7 +216,7 @@ def value(sims: list[YearSim], df: np.ndarray, adj: np.ndarray, adj_sd: np.ndarr
             "price": round(fair_paid, 2),  # per MWh paid, on 1 - volume_share of the output
             "put_mc": round(put, 3),
             "put_normal": round(put_normal, 3),
-            "volume_share": round(float(1 - (df @ paid.volume.mean(0)) / ev.sum()), 4),
-            "hours": round(float(np.mean([s.negative_hours.mean() for s in sims])), 1),
+            "volume_share": round(float(1 - (df @ clause.volume.mean(0)) / ev.sum()), 4),
+            "volume_share_last": round(float(unpaid_then[-1] / volume.mean(0)[-1]), 4),
         },
     }

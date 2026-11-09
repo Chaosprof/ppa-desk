@@ -29,7 +29,10 @@ def fleet(prices: pd.Series, gen: pd.DataFrame, freq: str = "M") -> pd.DataFrame
     out = {}
     for tech, (own, share_cols) in TECH.items():
         g = df[own].clip(lower=0)
+        paid = g * (df["price"] >= 0)
         out[f"{tech}_capture"] = (g * df["price"]).groupby(period).sum() / g.groupby(period).sum()
+        out[f"{tech}_capture_paid"] = (paid * df["price"]).groupby(period).sum() / paid.groupby(period).sum()
+        out[f"{tech}_unpaid"] = 1 - paid.groupby(period).sum() / g.groupby(period).sum()
         out[f"{tech}_share"] = df[share_cols].sum(axis=1).groupby(period).sum() / df["load"].groupby(period).sum()
     out["base"] = df["price"].groupby(period).mean()
     out["negative_hours"] = (df["price"] < 0).groupby(period).sum()
@@ -37,6 +40,7 @@ def fleet(prices: pd.Series, gen: pd.DataFrame, freq: str = "M") -> pd.DataFrame
     m = pd.DataFrame(out)
     for tech in TECH:
         m[f"{tech}_rate"] = m[f"{tech}_capture"] / m["base"]
+        m[f"{tech}_rate_paid"] = m[f"{tech}_capture_paid"] / m["base"]
     return m[m["hours"] > (600 if freq == "M" else 0)]  # drop incomplete months
 
 
@@ -53,11 +57,14 @@ class Model:
         return self.alpha[month - 1] + self.beta * np.log(share)
 
 
-def fit(monthly: pd.DataFrame, tech: str, upto: pd.Period | None = None, lookback: int = LOOKBACK) -> Model:
+def fit(monthly: pd.DataFrame, tech: str, upto: pd.Period | None = None, lookback: int = LOOKBACK,
+        target: str = "rate") -> Model:
+    """`target` on log penetration with month fixed effects: "rate" is the capture rate over all hours,
+    "rate_paid" over hours at or above zero, "unpaid" the share of output at negative prices."""
     m = monthly if upto is None else monthly[monthly.index <= upto]
     m = m.iloc[-lookback:]
     design = np.column_stack([np.eye(12)[m.index.month.to_numpy() - 1], np.log(m[f"{tech}_share"].to_numpy())])
-    rate = m[f"{tech}_rate"].to_numpy()
+    rate = m[f"{tech}_{target}"].to_numpy()
     coef, *_ = np.linalg.lstsq(design, rate, rcond=None)
     residual = rate - design @ coef
     variance = residual @ residual / max(len(rate) - design.shape[1], 1)
@@ -106,6 +113,20 @@ def cannibalisation(model: Model, today: pd.Series, future: pd.DataFrame) -> pd.
     months = today.index.to_numpy()
     base = model(months, today.to_numpy())
     return pd.DataFrame({y: model(months, future[y].to_numpy()) - base for y in future}, index=today.index)
+
+
+def paid_volume(unpaid: Model, monthly: pd.DataFrame, tech: str, window: tuple[dt.date, dt.date],
+                today: pd.Series, future: pd.DataFrame) -> pd.DataFrame:
+    """Output paid under a negative-price clause relative to today's, by month and delivery year.
+
+    The share of output at negative prices follows its own regression on penetration, so it grows with
+    the build-out: (1 - share then) / (1 - share today).
+    """
+    lo, hi = pd.Period(window[0], "M"), pd.Period(window[1], "M")
+    w = monthly[(monthly.index >= lo) & (monthly.index <= hi)]
+    now = w[f"{tech}_unpaid"].groupby(w.index.month).mean()
+    then = cannibalisation(unpaid, today, future).add(now, axis=0).clip(0.0, 0.95)
+    return (1 - then).div(1 - now, axis=0)
 
 
 def slope_error(model: Model, today: pd.Series, future: pd.DataFrame) -> pd.DataFrame:

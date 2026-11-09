@@ -57,6 +57,18 @@ def test_shape_is_normalised(shape):
     assert weekly == pytest.approx(np.full(12, level), rel=0.03)
 
 
+def test_a_trend_does_not_read_as_seasonality(synthetic_prices, window, shape):
+    """The same prices on a steep rally: the monthly factors stay, where 12-month blocks would tilt them."""
+    months = (synthetic_prices.index - synthetic_prices.index[0]).days / 30.44
+    rally = synthetic_prices * np.exp(0.03 * months)  # prices nearly triple over the window
+    tilted = hpfc.learn_shape(rally, window)
+    assert tilted.month == pytest.approx(shape.month, abs=0.03)
+    f = hpfc.split(rally)
+    block = ((f["year"] - window[0].year) * 12 + f["month"] - window[0].month) // 12
+    naive = (f.groupby([block, "month"])["price"].mean() / f.groupby(block)["price"].mean()).groupby("month").mean()
+    assert np.abs(naive.to_numpy() - shape.month).max() > 0.1
+
+
 def test_negative_prices_do_not_scale_with_level(shape):
     f = features(hours(dt.date(2027, 6, 6), dt.date(2027, 6, 7)))  # a Sunday
     low, high = shape(f, np.full(len(f), 50.0)), shape(f, np.full(len(f), 200.0))

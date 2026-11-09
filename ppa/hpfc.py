@@ -35,7 +35,7 @@ class Shape:
     and expected price = level * up - down.
     """
 
-    month: np.ndarray  # (12,) monthly level relative to its 12-month block
+    month: np.ndarray  # (12,) monthly level relative to the twelve months around it
     up: np.ndarray  # (12, 3, 24)
     down: np.ndarray  # (12, 3, 24)
 
@@ -96,15 +96,40 @@ def split(prices: pd.Series) -> pd.DataFrame:
     return f
 
 
+def seasonality(prices: pd.Series, window: tuple[dt.date, dt.date]) -> pd.Series | None:
+    """Monthly level relative to the twelve months centred on it, averaged by calendar month.
+
+    Dividing by the surrounding year keeps a trend out: against fixed 12-month blocks, a rally at the end
+    of the window reads as a seasonal peak. The centred mean needs six months on either side, so the last
+    six months of the window have none and are left out, and the six months before the window are used
+    where there are prices. None if a calendar month is left without a value.
+    """
+    lo, hi = window
+    first = (pd.Period(lo, "M") - 6).start_time.date()
+    span = hours(first, hi + dt.timedelta(days=1))
+    p = prices.loc[span[0]:span[-1]].dropna()
+    month = p.index.tz_convert(TZ).tz_localize(None).to_period("M")
+    mean = p.groupby(month).mean()[p.groupby(month).count() > 600]  # whole months only
+    mean = mean.reindex(pd.period_range(mean.index.min(), mean.index.max(), freq="M"))
+    if len(mean) < 13:
+        return None
+    weights = np.r_[0.5, np.ones(11), 0.5] / 12
+    ratio = mean.iloc[6:-6] / np.convolve(mean.to_numpy(), weights, mode="valid")
+    ratio = ratio[ratio.index >= pd.Period(lo, "M")].dropna()
+    factor = ratio.groupby(ratio.index.month).mean().reindex(range(1, 13))
+    return None if factor.isna().any() else factor / factor.mean()
+
+
 def learn_shape(prices: pd.Series, window: tuple[dt.date, dt.date]) -> Shape:
-    """Shape factors from whole 12-month blocks of the window."""
+    """Shape factors from the window: the monthly level detrended, the hourly tables per month's own level."""
     lo, hi = window
     f = split(prices[hours(lo, hi + dt.timedelta(days=1))].dropna())
-    f["block"] = ((f["year"] - lo.year) * 12 + f["month"] - lo.month) // 12
-
-    month_mean = f.groupby(["block", "month"])["price"].mean()
-    block_mean = f.groupby("block")["price"].mean()
-    month = (month_mean / block_mean.reindex(month_mean.index, level="block")).groupby("month").mean()
+    month = seasonality(prices, window)
+    if month is None:  # a window too short to detrend: whole 12-month blocks instead
+        f["block"] = ((f["year"] - lo.year) * 12 + f["month"] - lo.month) // 12
+        month_mean = f.groupby(["block", "month"])["price"].mean()
+        block_mean = f.groupby("block")["price"].mean()
+        month = (month_mean / block_mean.reindex(month_mean.index, level="block")).groupby("month").mean()
 
     def grid(col):
         g = f.groupby(["month", "daytype", "hour"])[col].mean().unstack().reindex(columns=range(24))
