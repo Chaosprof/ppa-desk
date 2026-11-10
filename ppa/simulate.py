@@ -12,7 +12,10 @@ Generation: site capacity factor from ERA5 on the *same* historical day as z_h, 
 behaviour of weather and price (sunny noon -> low price) is resampled rather than assumed.
 Days are drawn in weekly blocks from the same season of the recent window, shifted so weekdays
 line up. Annual volume is then rescaled to a full-load-hours draw from 20+ ERA5 years plus a
-per-path model error, so volume risk reflects long-run weather variability.
+per-path model error, so volume risk reflects long-run weather variability, and falls with the plant's age.
+
+Two standard normal draws ride along for the valuation's capture-rate errors: one per path for the
+cannibalisation slope, and one per path and year for what penetration does not explain.
 """
 
 from __future__ import annotations
@@ -96,6 +99,7 @@ class YearSim:
     tau: float  # years from valuation to mid-delivery
     level: np.ndarray  # calendar-level shock L_y, mean one
     slope_error: np.ndarray  # standard normal, the same in every year: error in the cannibalisation slope
+    capture_noise: np.ndarray  # standard normal, new each year: what moves the capture rate beside penetration
     volume: np.ndarray  # MWh
     revenue: np.ndarray  # sum G*P, EUR
     spot: np.ndarray  # sum P over hours: EUR per MW of baseload
@@ -139,17 +143,22 @@ def level_shocks(rng: np.random.Generator, years: list[int], valuation: dt.date,
 
 
 def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray, valuation: dt.date, capacity_mw: float,
-        vol: Vol, model_sd: float, paths: int, seed: int) -> list[YearSim]:
+        vol: Vol, model_sd: float, paths: int, seed: int, degradation: float = 0.0) -> list[YearSim]:
     rng = np.random.default_rng(seed)
     level, tau = level_shocks(rng, years, valuation, vol, paths)
     model_error = 1 + model_sd * rng.standard_normal(paths)
     target_flh = rng.choice(flh, size=(paths, len(years))) * model_error[:, None]
-    # Its own stream, so it leaves every other draw as it was; made orthogonal to each year's level and
-    # level x volume, so an uncertain slope moves the risk and not the expected price.
-    slope_error = np.random.default_rng([seed, 1]).standard_normal(paths)
+    target_flh = target_flh * (1 - degradation) ** np.arange(len(years))  # output lost per year of age
+    # Capture-rate errors have their own streams, so they leave every other draw as it was. They are made
+    # orthogonal to each year's level and level x volume, so they move the risk and not the expected price.
     basis = np.column_stack([np.ones(paths), level, level * target_flh])
-    slope_error -= basis @ np.linalg.lstsq(basis, slope_error, rcond=None)[0]
-    slope_error /= slope_error.std()
+
+    def orthogonal(z: np.ndarray) -> np.ndarray:
+        z = z - basis @ np.linalg.lstsq(basis, z, rcond=None)[0]
+        return z / z.std(axis=0)
+
+    slope_error = orthogonal(np.random.default_rng([seed, 1]).standard_normal(paths))
+    capture_noise = orthogonal(np.random.default_rng([seed, 2]).standard_normal((paths, len(years))))
 
     out = []
     for j, year in enumerate(years):
@@ -183,7 +192,7 @@ def run(curve: Curve, shape: Shape, pl: Pool, years: list[int], flh: np.ndarray,
         sd = P.std(axis=0)
         out.append(YearSim(
             year=year, hours=len(idx), base=float(F.mean()), tau=float(tau[j]),
-            level=level[:, j], slope_error=slope_error,
+            level=level[:, j], slope_error=slope_error, capture_noise=capture_noise[:, j],
             volume=G.sum(axis=1), revenue=(G * P).sum(axis=1), spot=P.sum(axis=1),
             volume_pos=(G * pos).sum(axis=1), revenue_pos=(G * P * pos).sum(axis=1),
             revenue_det=P @ g_mean, volume_det_pos=pos @ g_mean, revenue_det_pos=(P * pos) @ g_mean,

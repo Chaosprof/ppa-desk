@@ -23,7 +23,8 @@
 - Prices are EUR/MWh; volumes MWh; capacity MW; P&L EUR (the site shows €m).
 - `Shape` is sign-split: `level * up - down`. Positive prices scale with the level, negative ones do not.
 - Simulated prices must stay unbiased against the curve (`E[P_h] = F_h`). Decomposition steps must sum to the price.
-- Assumptions belong in `inputs/market.toml`, not in code.
+- Assumptions belong in `inputs/market.toml`, not in code. What can be measured from fetched data is measured instead
+  (forward vol, spark vols and correlations, the capture errors).
 - `fundamental.py` caches its backtest in `data/` keyed on its config and `VERSION`; bump `VERSION` when the model
   changes. The backtest then re-runs, which takes about 10 minutes.
 
@@ -36,20 +37,28 @@
 - A trend inside the window does not change the curve's monthly seasonality.
 - The risk premium makes the hedged P10 exactly zero.
 - Cannibalisation moves with the price level, so the hedge shrinks with the capture rate. Its slope error is the same in
-  every year and orthogonal to the level, so it raises the premium and leaves the expected price alone.
+  every year and orthogonal to the level, so it raises the premium and leaves the expected price alone. The year-to-year
+  capture error is new each year, carries over by its correlation, and is orthogonal to the level too.
+- Hedge cost, credit and guarantees of origin are steps of the price that leave the model deal and its hedge alone, and
+  the steps as shown add up to the price as shown. Hedge cost is the spread plus margin funding. Credit loss is zero
+  without default, falls with recovery, and is zero for a contract with nothing to lose. The premium rises with its
+  confidence level. Degradation takes the same share of output each year and leaves prices alone.
 - The valuation decomposition adds up to the all-hours price, and the hedge cuts risk. The negative-price clause is a
   second price per paid MWh, never a step, and a shrinking paid share leaves the all-hours deal untouched.
   Shape risk under its own hedge and volume risk at the forward curve each stay within the hedged risk.
 - Capture regressions recover a known slope within its standard error, and a shorter window refits on the trailing
-  months alone.
+  months alone. The year-ahead error recovers what penetration does not explain, and load growth makes the same
+  build-out a smaller share.
 - Kirk matches Monte Carlo. LSMC lies between intrinsic and perfect foresight.
 - OMIP pages parse to dashboard contract names; realised vol recovers a known vol; re-published holidays are dropped.
+  Vol from monthly averages recovers the daily vol, and correlations that cannot hold together are rejected.
 - The merit order clears supply to demand, supply rises with price, and more demand never lowers the price. Storage
   never exceeds its power, loses exactly its round-trip efficiency, and idles when the spread does not cover losses. Wind and
   solar curtail only below zero and never beyond the forecast, and the surplus backstop keeps a surplus off the floor. Committed
   thermal output is flat within each day, stays within the fleet, and widens the daily price range.
   The trade fit recovers a known response. Fair values use only data published before their date, replay
   the twelve months before it, and drop nuclear once closed; a contract's next move never crosses its expiry.
+  Price-setting shares add up to one, and more solar or wind alone lowers its own capture rate.
   EEX carbon reports parse whatever their yearly layout. Dearer fuel or carbon never lowers the price, and moves it by
   no more than the least efficient plant's heat rate or emissions. Gas is quoted per gross MWh and costed per net MWh.
 

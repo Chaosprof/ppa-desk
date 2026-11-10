@@ -2,9 +2,9 @@
 
 Valuation and risk for German solar and wind power purchase agreements, built only from public data.
 
-It takes the exchange forward curve, builds an arbitrage-free hourly curve, simulates prices jointly with site weather, and prices a pay-as-produced PPA. The fair price is split into the parts a desk negotiates over: baseload, profile, price–volume correlation, cannibalisation, risk premium and balancing. The output also includes the same deal with a negative-price clause, the exchange hedge, the residual risk and the embedded options.
+It takes the exchange forward curve, builds an arbitrage-free hourly curve, simulates prices jointly with site weather, and prices a pay-as-produced PPA. The fair price is split into the parts a desk negotiates over: baseload, profile, price–volume correlation, cannibalisation, risk premium and balancing. The model price is then turned into a bid by the terms a desk adds: hedge cost, credit and guarantees of origin. The output also includes the same deal with a negative-price clause, the exchange hedge, the residual risk and the embedded options.
 
-**[MEMO.md](MEMO.md)** has the answer on one page: a fair 10-year price, what it is made of, and the hedge.
+**[MEMO.md](MEMO.md)** has the answer on one page: a 10-year bid, what it is made of, and the hedge.
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
@@ -30,17 +30,24 @@ ERA5 weather from 2005 to 2026 comes from Open-Meteo for four sites (North, East
 P50 and P90 combine inter-annual weather variability with a model-error term.
 
 **Joint simulation** — [`simulate.py`](ppa/simulate.py)
-`P = L·(F + D + M·Δup) − (D + Δdown)`. Here `F` is the hourly curve, `M` its monthly level and `D` the expected negative part for the hour. `Δup` and `Δdown` are price residuals from a recent historical day, and `L` is a lognormal shock to the calendar-year price level that leaves negative prices alone. Site generation is taken from the same historical day, so the weather–price dependence (sunny noon, cheap noon) is resampled rather than assumed. Days are drawn in weekly blocks, with weekdays aligned and each pool year equally likely. Each year's volume is rescaled to a full-load-hours draw from the long ERA5 record. The simulation is unbiased: `E[P] = F`.
+`P = L·(F + D + M·Δup) − (D + Δdown)`. Here `F` is the hourly curve, `M` its monthly level and `D` the expected negative part for the hour. `Δup` and `Δdown` are price residuals from a recent historical day, and `L` is a lognormal shock to the calendar-year price level that leaves negative prices alone. Site generation is taken from the same historical day, so the weather–price dependence (sunny noon, cheap noon) is resampled rather than assumed. Days are drawn in weekly blocks, with weekdays aligned and each pool year equally likely. Each year's volume is rescaled to a full-load-hours draw from the long ERA5 record, and a solar plant loses 0.4% of its output per year of age. The simulation is unbiased: `E[P] = F`.
 
 The level shock has one Brownian path for all calendar years. At each moment a year moves with the vol of a contract that far from delivery: 12% while it is more than three years out, rising to 27% in the last year. A far year therefore moves less in total than a flat vol would give it.
 
 **Valuation** — [`valuation.py`](ppa/valuation.py)
 The headline deal pays a fixed price for every MWh produced. The fair price is the expected price, lowered by a risk premium. That premium is solved so the hedged deal breaks even at its P90 outcome (the 10th percentile of lifetime P&L).
 
-- **Cannibalisation** is a change in the capture rate, a share of the price, so in €/MWh it moves with the price level. Its slope is uncertain: each path draws one error from the slope's standard error and keeps it for every year. That error grows with the build-out and does not diversify over the tenor, so it is most of what the hedge leaves behind and most of the premium on a long solar deal.
-- **What the hedge leaves** is reported for shape and cannibalisation alone and for volume alone. Expected generation carries more of the price level than the plant does, so the shape part gets its own hedge.
+- **Cannibalisation** is a change in the capture rate, a share of the price, so in €/MWh it moves with the price level. Two errors sit on it, and no exchange hedge reaches either.
+  - **The slope:** each path draws one error from the slope's standard error and keeps it for every year. It grows with the build-out and does not diversify over the tenor, so it is most of the premium on a long solar deal.
+  - **The year:** each year also lands away from the model for reasons penetration does not explain. Its size is how far the model has missed a calendar year ahead since 2018, and a year keeps part of the year before. It diversifies over a long tenor and is most of the premium on a short one: the one-year solar premium is €16.85.
+- **What the hedge leaves** is reported for each source alone: the slope, the year, the hourly shape and volume. Expected generation carries more of the price level than the plant does, so the shape part gets its own hedge.
+- **The premium's confidence level** is a choice, so the price is also given at P75 and P95: €41.39 and €36.32 for the 10-year solar deal, against €38.30 at P90.
+- **Terms that turn the model price into a bid** come from `inputs/market.toml` and are indicative.
+  - **Hedge cost:** half the bid-offer spread on every MWh of baseload sold, tight for the three liquid calendar years and wide beyond, plus funding the initial margin. The margin is the 99% two-day move at the vol of a contract that far from delivery.
+  - **Credit:** the expected loss if the generator defaults. The hedge sits on the exchange and offsets none of it, so the exposure is the PPA alone: what the years left are worth to the desk, by regression on the price level. In a backwardated curve a fixed price is worth most in the early years, so most of the exposure is there.
+  - **Guarantees of origin** come with the power and add their value.
 - **The hedge** is the minimum-variance amount of calendar baseload per year. It is smaller than the P50-equivalent MW, because a solar plant's revenue moves less than one-for-one with the baseload level, and it steps down as the capture rate falls.
-- **The negative-price clause** is a second structure: only output in hours at or above zero is paid. Its price is per paid MWh, so it is higher on less volume and is not a step of the first price. The paid volume shrinks as negative hours grow with the build-out (78% of a solar plant's output in 2027, 73% in 2036), and the price takes the cannibalisation of the paid hours alone.
+- **The negative-price clause** is a second structure: only output in hours at or above zero is paid. Its price is per paid MWh, so it is higher on less volume and is not a step of the first price. The paid volume shrinks as negative hours grow with the build-out (78% of a solar plant's output in 2027, 74% in 2036), and the price takes the cannibalisation of the paid hours alone.
 - **The baseload-shaped alternative** shows the realised range the generator would keep after selling its P50-equivalent MW as baseload.
 
 **Cannibalisation** — [`capture.py`](ppa/capture.py)
@@ -48,16 +55,20 @@ Monthly fleet capture rates are regressed on log penetration with month fixed ef
 - **Solar:** mean absolute error 0.090 vs 0.113 for the naive forecast.
 - **Wind:** no better than naive, which fits wind's weak penetration effect.
 
-The slope is −0.22 ± 0.09 for solar and −0.04 ± 0.08 for wind, in capture rate per log share of load. The valuation simulates that standard error.
+The slope is −0.22 ± 0.09 for solar and −0.04 ± 0.08 for wind, in capture rate per log share of load. The valuation simulates that standard error. Penetration is capacity over load: capacity follows the build-out path and load grows 1% a year.
 
-The window moves the slope by more than that. Refitted on other windows, with the shape, the build-out and everything else unchanged:
+A calendar year ahead, given the year's actual penetration, the model fitted on the 36 months before has missed the capture rate by 0.078 for solar and 0.033 for wind (root mean square, 2018–2026). The largest miss is 2024, at −0.17. A year's error carries 0.13 of the year before for solar and 0.40 for wind. This is the year-to-year error the valuation simulates.
+
+The window moves the slope by more than its standard error. Refitted on other windows, with the shape, the build-out and everything else unchanged:
 
 | Months | Solar slope | 10-year solar, €/MWh | Wind slope | 10-year wind, €/MWh |
 |---|---:|---:|---:|---:|
-| 24 | +0.01 ± 0.15 | 44.27 | −0.09 ± 0.10 | 72.50 |
-| 36 | −0.22 ± 0.09 | 36.93 | −0.04 ± 0.08 | 75.62 |
-| 48 | −0.33 ± 0.07 | 32.12 | −0.05 ± 0.06 | 75.90 |
-| 60 | −0.47 ± 0.07 | 25.63 | −0.05 ± 0.05 | 76.19 |
+| 24 | +0.01 ± 0.15 | 44.76 | −0.09 ± 0.10 | 72.95 |
+| 36 | −0.22 ± 0.09 | 38.30 | −0.04 ± 0.08 | 75.42 |
+| 48 | −0.33 ± 0.07 | 33.92 | −0.05 ± 0.06 | 75.65 |
+| 60 | −0.47 ± 0.07 | 28.19 | −0.05 ± 0.05 | 75.65 |
+
+The fundamental model gives the other end. With 10% more solar and nothing else built, its capture rate falls by 0.98 per log share, and wind's by 0.30. That is the slope with no new storage, flexible demand or export capacity. History's slope is flatter by what was built alongside: batteries went from 8 to 22 GW inside the 36 months. The 10-year price therefore assumes flexibility keeps pace with solar as it has since 2023.
 
 Two more regressions of the same form split the slope for the negative-price clause. For solar, the capture rate over hours at or above zero falls by 0.14 ± 0.05 per log share, and the share of output at negative prices rises by 0.09 ± 0.09.
 
@@ -65,7 +76,7 @@ Two choices came from the data, not from priors. First, the full 2015–26 slope
 
 **Options** — [`options.py`](ppa/options.py)
 - **Negative-price clause:** the strip of hourly puts struck at zero is the smaller part of the clause; most of the higher price comes from the volume that is no longer paid. A normal model per hour is within 15% of the simulated strip for solar but up to twice it for wind, because negative prices are bounded and do not scale with the level.
-- **Clean spark spread:** Kirk's approximation on a moment-matched gas-plus-carbon basket, against a three-asset Monte Carlo, swept over correlation. The plant is a CCGT at 55% net efficiency, which is 49.5% of the gas as it is quoted.
+- **Clean spark spread:** Kirk's approximation on a moment-matched gas-plus-carbon basket, against a three-asset Monte Carlo, swept over correlation. The plant is a CCGT at 55% net efficiency, which is 49.5% of the gas as it is quoted. Vols and correlations are measured over the last 24 months: power 44% (monthly contracts within two months of delivery), carbon 28% (EEX auctions) and gas 64%. Gas has no free daily price, so its vol comes from monthly averages, scaled up by √(3/2) because averaging removes a third of the variance of a change. Correlations are those of monthly average changes: power–gas 0.87, power–carbon 0.35, gas–carbon 0.06.
 - **2-hour battery:** valued as a swing option with 250 cycles a year by least-squares Monte Carlo, bounded by the intrinsic and perfect-foresight values. Each day it charges before it discharges.
 
 **Forward curve history** — [`forwards.py`](ppa/forwards.py)
@@ -98,7 +109,8 @@ Negative hours are close in 2025 (503 against 576) but still 1.4–1.9× the mar
 **Fair value against the market** — [`fairvalue.py`](ppa/fairvalue.py)
 At every month end since January 2019, the fundamental model prices the next calendar year with what was known that day. It replays the twelve months before, with their weather, demand, wind, solar, trade and storage as they were. That replay runs on that day's fuel and carbon prices, the thermal fleet installed then, nuclear on its legal closure path and the parameters fitted on the three years before. The gap to the Cal futures settlement is then traded for one month: long when fair value is above the market, short when below.
 
-- **On 30 October 2026**, Cal-27 settled at €164.27 against a fair value of €133.08. The futures rose €36 in October. The model's gas is September's average, €75.61; at the mid-October quote of €88.41 the fair value would be about €8 higher, so stale fuel explains a quarter of the gap.
+- **On 30 October 2026**, Cal-27 settled at €164.27 against a fair value of €133.08. The futures rose €36 in October. The model's gas is September's average, €75.61; at the mid-October quote of €88.41 the fair value would be €140.73, so stale fuel explains a quarter of the gap.
+- **What sets the price.** At that day's fuel and carbon, lignite bids €97–128/MWh, hard coal €127–156 and gas €177–294. Of the supply that responds at the clearing price, lignite is 31%, coal 28% and gas 25% on average over the year; curtailed wind and solar, trade and demand response are the rest. Gas is the marginal fuel in a quarter of the hours, which is why its delta is 0.60 and not a gas plant's 2.0.
 - **Fuel and carbon.** The same year is cleared again with one input bumped. €1/MWh on gas moves the Cal-27 fair value by €0.60, €1/t on carbon by €0.66 and €1/t on coal by €0.09. A solar capture price moves by €0.21, €0.44 and €0.06: about a third of baseload's gas exposure but two thirds of its carbon exposure, because in the model coal and lignite set the midday price more often than gas does.
 - **As a signal, the gap is weak.** Over 86 months it called the next move 64% of the time for +€4.32/MWh a month, with a t-statistic of 1.1. Outside the July 2021–June 2023 crisis it is right 59% of the time, t 1.9. Last month's move does better (t 2.2), mostly from the 2021–22 trend.
 - **Against the realised year**, fair value was closer than the futures in 2020, 2023 and 2024, and further in 2021 and 2025. Both missed the crisis by more than €100.
@@ -123,13 +135,16 @@ Everything the model believes that is not fetched lives in [`inputs/market.toml`
 ## Limits
 
 - **No free implied vols:** forward vol is realised, from OMIP settlements. OMIP shows no trading in German contracts, so its prices are reference marks that track EEX, not trade prints.
-- **Spark-spread gas:** an indicative press quote; replace it with an ICE TTF settlement for the valuation date. Carbon is EEX's auction price.
+- **Venue:** German power trades on EEX. OMIP lists the same contracts and publishes its reference prices freely, so the curve, the vols and the hedge are all marked there. A desk would use EEX settlements, with peak contracts.
+- **Spark-spread gas:** an indicative press quote; replace it with an ICE TTF settlement for the valuation date. Carbon is EEX's auction price. Gas vol and the gas correlations rest on about 22 monthly changes.
 - **No peak quotes:** the peak/base ratio comes from the historical shape. The solver honours peak quotes when they are given.
 - **Balancing:** fleet day-ahead forecast error × single-site factor × an assumed imbalance spread, because reBAP needs registration.
 - **15-minute day-ahead products (since Oct 2025):** averaged to hourly.
 - **Price levels:** one factor moves all calendar years together.
 - **Hedge liquidity:** the hedge sells every calendar year at today's curve at no cost. Beyond about three years a desk would stack and roll, and a one-factor curve cannot price the risk of that.
-- **Cannibalisation risk:** only the slope's standard error is simulated. The capacity path, the log form and the 36-month window are taken as given, and the window alone moves the solar price by more than the risk premium.
+- **Cannibalisation risk:** the slope's standard error and the year-ahead error are simulated. The capacity path, load growth, the log form and the 36-month window are taken as given, and the window alone moves the solar price by more than the risk premium. 2036 is 0.76 log units of penetration beyond the window's mean, against ±0.3 inside it.
+- **Cannibalisation outside the curve:** the capture-rate change is applied to the plant's revenue, not to the hourly curve. The curve for 2036 keeps today's shape, so the battery value and the negative hours in the paths do not see the build-out.
+- **Commercial terms:** bid-offer, margin, default rate, recovery and the value of guarantees of origin are indicative inputs, not quotes. Variation margin is not costed: a short hedge in a rally needs cash long before the PPA pays it back, as in 2022. Credit exposure follows the price level alone and ignores collateral, guarantees and step-in rights. Change of law, curtailment by the grid operator and availability guarantees are not modelled.
 - **Fundamental model fuel prices:** gas, coal and oil are IMF monthly averages (free daily TTF and API2 are licensed), and coal is Newcastle rather than the Rotterdam API2 that German plants pay. Within-month swings, as in August 2022, are missed.
 - **Fair value inputs:** fuel enters at the month's spot price, held flat, because free gas and coal forward curves do not exist. When the curve is in steep backwardation or contango, as in 2021–23, the gap mostly measures that rather than mispricing. Capacity growth is left out until the model can grow flexibility with it.
 - **Fundamental model scope:** one German node with a fitted trade function, not a European dispatch. Intertemporal constraints (start-up costs, ramping) show up only as must-run and bid noise.

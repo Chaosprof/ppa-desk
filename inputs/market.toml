@@ -50,8 +50,7 @@ carbon = 88.05               # EUA, EEX primary auction clearing price, 2026-10-
 heat_rate = 2.02             # MWh gas as quoted (gross calorific value) per MWh power: a CCGT at 55% net, 49.5% gross
 emission_factor = 0.37       # tCO2 per MWh power: 0.20 t per MWh net over 55%
 vom = 3.0                    # EUR/MWh
-vol = { power = 0.60, gas = 0.55, carbon = 0.40 }
-corr = { power_gas = 0.80, power_carbon = 0.45, gas_carbon = 0.35 }
+# Vols and correlations are measured: OMIP monthly contracts, EEX carbon auctions and monthly gas (forwards.spark_inputs).
 
 [forwards]
 # Daily OMIP reference prices since OMIP listed German futures. The simulation's forward vol is the
@@ -84,7 +83,16 @@ single_asset_factor = 1.5    # single-site error vs the fleet, after pooling in 
 # Uncertainty beyond weather that an energy yield assessment adds, as a share of P50.
 model_uncertainty = { solar = 0.05, wind = 0.08 }
 
+[commercial]
+# What turns the model price into a bid. Indicative: a desk replaces these with its own.
+origin = 1.00                # EUR/MWh, guarantees of origin delivered with the power
+liquid_years = 3             # calendar years ahead that trade at a tight spread
+bid_offer = { liquid = 0.25, illiquid = 1.50 }   # half the spread, EUR per MWh of baseload sold
+margin = { confidence = 0.99, holding_days = 2, funding_spread = 0.015 }   # initial margin on the exchange hedge
+credit = { hazard = 0.015, recovery = 0.40 }     # generator default per year: an unrated project company, no guarantee
+
 [capacity]
+load_growth = 0.01           # per year: the same build-out is a smaller share of a larger market
 # Average installed GW (solar AC; wind onshore + offshore) per delivery year.
 # History comes from Energy-Charts; this path continues the 2025–26 build rate (~13 GW/yr solar),
 # below the EEG 2023 targets of 215 GW solar and 145 GW wind by 2030.
@@ -104,6 +112,7 @@ dc_ac_ratio = 1.25
 losses = 0.14                # soiling, mismatch, wiring, inverter, availability
 temp_coeff = -0.0037
 irradiance_scale = 0.93      # ERA5 overstates surface irradiance over Germany by ~5–8%
+degradation = 0.004          # output lost per year of age
 
 [technology.wind]
 hub_height = 135

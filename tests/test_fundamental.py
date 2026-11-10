@@ -199,3 +199,26 @@ def test_eua_report_is_parsed_whatever_its_layout():
         s = sources._eua_sheet(buf.getvalue())
         assert s.iloc[0] == first
         assert isinstance(s.index, pd.DatetimeIndex)
+
+
+def test_price_setting_shares_add_up_and_bids_follow_efficiency(market):
+    """Every hour's price is set by the sources that respond at it; a fuel's bids run from its most to its
+    least efficient plant."""
+    from ppa import fairvalue
+
+    _, x, fl = market
+    d = fairvalue.drivers(x, fl, fm.X0, CFG)
+    assert list(d.index) == ["lignite", "coal", "gas", "renewables", "other"]
+    assert d["share"].sum() == pytest.approx(1.0) and (d["share"] >= 0).all()
+    assert (d.loc[["lignite", "coal", "gas"], "low"] < d.loc[["lignite", "coal", "gas"], "high"]).all()
+    assert d.at["lignite", "low"] < d.at["gas", "low"]  # at these fuel prices lignite runs first
+    assert d.loc[["renewables", "other"], ["low", "high"]].isna().all().all()
+
+
+def test_more_solar_alone_lowers_its_capture_rate(market):
+    """With nothing built alongside, more solar or wind takes a larger cut from its own capture rate."""
+    from ppa import fairvalue
+
+    _, x, fl = market
+    b = fairvalue.buildout(x, fl, fm.X0, CFG)
+    assert (b["slope"] < 0).all() and ((b["rate"] > 0) & (b["rate"] < 1.2)).all()

@@ -42,6 +42,12 @@ def basket_corr(power, gas, carbon, hr, ef, s_p, s_g, s_c, rho_pg, rho_pc, rho_g
     return float(np.clip(np.log(cross) / (s_p * s_f * t), -1, 1))
 
 
+def consistent(corr: dict) -> bool:
+    """Whether the three pairwise correlations can hold together (a positive definite matrix)."""
+    pg, pc, gc = corr["power_gas"], corr["power_carbon"], corr["gas_carbon"]
+    return bool(np.linalg.eigvalsh(np.array([[1, pg, pc], [pg, 1, gc], [pc, gc, 1]])).min() > 1e-6)
+
+
 def spark_kirk(s: dict, t: float) -> float:
     v, c = s["vol"], s["corr"]
     fuel, s_f = fuel_basket(s["gas"], s["carbon"], s["heat_rate"], s["emission_factor"],

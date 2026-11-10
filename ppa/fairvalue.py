@@ -123,6 +123,48 @@ def sensitivities(s: pd.DataFrame, fl: fm.Fleet, theta: np.ndarray, cfg: dict) -
     return pd.DataFrame(rows).T
 
 
+SETS = {"lignite": "lignite", "coal": "coal", "gas": "gas", "wind": "renewables", "solar": "renewables"}
+
+
+def drivers(s: pd.DataFrame, fl: fm.Fleet, theta: np.ndarray, cfg: dict, step: float = 1.0) -> pd.DataFrame:
+    """What sets the price in scenario `s`, per source: lignite, coal, gas, renewables (curtailment) and other
+    (oil, trade, demand and surplus response).
+
+    `share` is the source's part of the supply that responds to the price at the clearing price, averaged over
+    hours; a fuel's delta is about its share times its heat rate. `low` and `high` are the bids of a fuel's most
+    and least efficient plants at the scenario's fuel and carbon.
+    """
+    market = fm.Market(s, fl, theta, cfg)
+    price, _ = fm.solve(market, s, fl, cfg)
+    up, down = market.dispatch(price + step), market.dispatch(price - step)
+    response = pd.DataFrame({k: up[k] - down[k] for k in up})
+    response = response[response.sum(axis=1) > 0]
+    share = response.div(response.sum(axis=1), axis=0).mean()
+    out = pd.DataFrame({"share": share.groupby(lambda k: SETS.get(k, "other")).sum(), "low": np.nan, "high": np.nan})
+    for f in ["lignite", "coal", "gas"]:
+        bids = market.cost[f].mean(axis=0)
+        out.loc[f, ["low", "high"]] = bids.min(), bids.max()
+    return out.reindex(["lignite", "coal", "gas", "renewables", "other"])
+
+
+def buildout(s: pd.DataFrame, fl: fm.Fleet, theta: np.ndarray, cfg: dict, step: float = 0.10) -> pd.DataFrame:
+    """Capture rate per log share if solar or wind grew by `step` and nothing else did.
+
+    No storage, flexible demand or export capacity is built alongside, so this is the steepest the
+    cannibalisation slope can be; the slope seen in history is flatter by what was built with it.
+    """
+    def rates(b: pd.DataFrame) -> dict[str, float]:
+        price, _ = fm.solve(fm.Market(b, fl, theta, cfg), b, fl, cfg)
+        return {k: float((price * b[f"{k}_fc"]).sum() / b[f"{k}_fc"].sum() / price.mean()) for k in ["solar", "wind"]}
+
+    base = rates(s)
+    rows = {}
+    for k in ["solar", "wind"]:
+        more = rates(s.assign(**{f"{k}_fc": s[f"{k}_fc"] * (1 + step)}))
+        rows[k] = {"rate": base[k], "slope": (more[k] - base[k]) / np.log(1 + step)}
+    return pd.DataFrame(rows).T
+
+
 def next_change(history: pd.DataFrame, fv: pd.DataFrame) -> pd.Series:
     """Change in each row's contract from its date to the next month end on which it still trades."""
     wide = history.pivot_table(index="date", columns="contract", values="price").sort_index()

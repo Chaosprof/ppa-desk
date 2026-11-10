@@ -7,7 +7,11 @@ const TECHS = { solar: "Solar", wind: "Wind" };
 const STEPS = [
   ["base", "Baseload forward"], ["profile", "Profile"], ["correlation", "Correlation"],
   ["cannibalisation", "Cannibalisation"], ["risk", "Risk premium"], ["balancing", "Balancing"],
+  ["hedging", "Hedge cost"], ["credit", "Credit"], ["origin", "Guarantees of origin"],
 ];
+const SETS = { lignite: "Lignite", coal: "Hard coal", gas: "Gas", renewables: "Wind and solar", other: "Trade and other" };
+const LEFT = [["sd_slope", "Cannibalisation slope"], ["sd_year", "Capture rate, year to year"],
+  ["sd_shape", "Hourly shape"], ["sd_volume", "Volume"]];
 
 const INPUTS = { gas: "Gas, €/MWh", carbon: "Carbon, €/t", coal: "Coal, €/t" };
 
@@ -80,7 +84,7 @@ function price(el) {
       ])}</section>
     </div>`;
   const rows = STEPS.map(([k, label]) => ({ label, value: v.steps[k], total: k === "base" }));
-  rows.push({ label: "Fair price", value: v.price, total: true });
+  rows.push({ label: "Price", value: v.price, total: true });
   waterfall($("waterfall"), rows, (x, total) => (total ? x.toFixed(2) : signed(x)));
   const prices = D.scenarios[state.tech][state.site].map((s) => s.price);
   const xs = prices.map((_, i) => i + 1);
@@ -101,6 +105,12 @@ function hedge(el) {
     <div class="grid">
       <section><h2>Baseload to sell, MW</h2><div class="chart" id="hedge"></div></section>
       <section><h2>Hedged lifetime P&amp;L, €m</h2><div class="chart" id="pnl"></div></section>
+    </div>
+    <div class="grid">
+      <section><h2>What the hedge leaves, €m</h2>${table(["", "Volatility"],
+        LEFT.map(([k, label]) => [label, v.risk[k].toFixed(1)]))}</section>
+      <section><h2>Risk premium by confidence, €/MWh</h2>${table(["", "Premium", "Price"],
+        v.premiums.map((p) => [`P${p.confidence}`, p.premium.toFixed(2), p.price.toFixed(2)]))}</section>
     </div>
     <section><h2>Backtest, one-year ${state.tech} PPA bought each October, P&amp;L €m</h2>${table(
       ["", "Unhedged", "Volume hedge", "Value hedge"],
@@ -195,13 +205,16 @@ function capture(el) {
     <section><h2>Capture rate, history and projection</h2><div class="chart" id="rates"></div></section>
     <div class="grid">
       <section><h2>Solar, one month ahead</h2><div class="chart" id="backtest"></div></section>
-      <section><h2>Mean absolute error</h2>${table(["", "Model", "Seasonal naive"],
-        ["solar", "wind"].map((t) => [TECHS[t], D.capture[t].backtest.mae.toFixed(3), D.capture[t].backtest.naive_mae.toFixed(3)]))}</section>
+      <section><h2>Capture rate error</h2>${table(["", "Month ahead", "Seasonal naive", "Year ahead"],
+        ["solar", "wind"].map((t) => [TECHS[t], D.capture[t].backtest.mae.toFixed(3), D.capture[t].backtest.naive_mae.toFixed(3),
+          D.capture[t].year_ahead.sd.toFixed(3)]))}</section>
     </div>
     <section><h2>Slope by months of history, and the ${D.meta.years.length}-year price, €/MWh</h2>${table(
       ["", "Solar slope", "Solar price", "Wind slope", "Wind price"],
-      D.capture.solar.windows.map((s, i) => [s.months, slope(s), s.price.toFixed(2),
-        slope(D.capture.wind.windows[i]), D.capture.wind.windows[i].price.toFixed(2)]))}</section>`;
+      [...D.capture.solar.windows.map((s, i) => [s.months, slope(s), s.price.toFixed(2),
+        slope(D.capture.wind.windows[i]), D.capture.wind.windows[i].price.toFixed(2)]),
+      ["Fundamental model, nothing else built", signed(D.fair_value.buildout.solar.slope), "",
+        signed(D.fair_value.buildout.wind.slope), ""]])}</section>`;
   lines($("rates"), years, [
     { name: "Solar", color: "var(--accent)", values: rate("solar") },
     { name: "Wind", color: "var(--ink)", values: rate("wind") },
@@ -252,11 +265,15 @@ function fairValue(el) {
       ${stat(`${t.contract} futures`, eur(t.futures))}
       ${stat("Fair value", eur(t.fair_value))}
       ${stat("Gap", signed(t.gap))}
+      ${stat(`Fair value at ${eur(t.gas_quote)} gas`, eur(t.at_quote))}
     </div></section>
     <section><h2>Next calendar year at each month end, €/MWh</h2><div class="chart" id="fv"></div></section>
     <section><h2>${t.contract} fair value per unit of fuel and carbon, €/MWh</h2>${table(
       ["", "Input", "Baseload", "Solar", "Wind"],
       f.sensitivity.map((r) => [INPUTS[r.input], r.level.toFixed(2), signed(r.base), signed(r.solar), signed(r.wind)]))}
+    </section>
+    <section><h2>What sets the ${t.contract} price</h2>${table(["", "Share of hours", "Bids, €/MWh"],
+      f.drivers.map((r) => [SETS[r.source], pct(r.share), r.low == null ? "" : `${r.low.toFixed(0)}–${r.high.toFixed(0)}`]))}
     </section>
     <div class="grid">
       <section><h2>Gap trade, cumulative €/MWh</h2><div class="chart" id="fvpnl"></div></section>
@@ -294,12 +311,16 @@ function options(el) {
     <div class="grid">
       <section><h2>Clean spark spread, ${sp.contract}, €/MWh</h2>${table(["Power–gas correlation", "Kirk", "Monte Carlo"],
         sp.sweep.map((r) => [r.rho.toFixed(2), r.kirk.toFixed(2), r.mc.toFixed(2)]))}</section>
-      <section><h2>Battery, ${b.year}, k€/MW</h2>${table(["", "Value"], [
-        ["Intrinsic", b.intrinsic.toFixed(1)],
-        ["Least-squares Monte Carlo", b.lsmc.toFixed(1)],
-        ["Perfect foresight", b.foresight.toFixed(1)],
-      ])}</section>
-    </div>`;
+      <section><h2>Measured over ${D.forwards.window_months} months</h2>${table(["", "Volatility"], [
+        ["Power", pct(sp.vol.power)], ["Gas", pct(sp.vol.gas)], ["Carbon", pct(sp.vol.carbon)]])}
+        ${table(["", "Correlation"], [["Power–gas", sp.corr.power_gas.toFixed(2)],
+          ["Power–carbon", sp.corr.power_carbon.toFixed(2)], ["Gas–carbon", sp.corr.gas_carbon.toFixed(2)]])}</section>
+    </div>
+    <section><h2>Battery, ${b.year}, k€/MW</h2>${table(["", "Value"], [
+      ["Intrinsic", b.intrinsic.toFixed(1)],
+      ["Least-squares Monte Carlo", b.lsmc.toFixed(1)],
+      ["Perfect foresight", b.foresight.toFixed(1)],
+    ])}</section>`;
 }
 
 function data(el) {

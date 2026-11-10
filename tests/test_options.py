@@ -24,14 +24,20 @@ def test_kirk_reduces_to_black_with_zero_strike():
     assert v == pytest.approx(options.black_call(100.0, 90.0, sd))
 
 
-def test_kirk_close_to_monte_carlo(cfg):
-    s, t = cfg["spark"], 0.25
+@pytest.fixture
+def spark(cfg):
+    return {**cfg["spark"], "vol": {"power": 0.60, "gas": 0.55, "carbon": 0.40},
+            "corr": {"power_gas": 0.80, "power_carbon": 0.45, "gas_carbon": 0.35}}
+
+
+def test_kirk_close_to_monte_carlo(spark):
+    s, t = spark, 0.25
     mc, se = options.spark_mc(s, t, n=1_000_000)
     assert abs(options.spark_kirk(s, t) - mc) < max(4 * se, 0.01 * mc)
 
 
-def test_spread_option_value_falls_with_correlation(cfg):
-    s, t = cfg["spark"], 0.25
+def test_spread_option_value_falls_with_correlation(spark):
+    s, t = spark, 0.25
     values = [options.spark_kirk({**s, "corr": {**s["corr"], "power_gas": r}}, t) for r in (0.2, 0.5, 0.8)]
     assert values[0] > values[1] > values[2]
 
@@ -51,3 +57,8 @@ def test_swing_with_every_right_equals_sum_of_positive_parts():
     lsmc, foresight = options.swing_lsmc(spreads, rights=30)
     assert lsmc == pytest.approx(np.maximum(spreads, 0).sum(1).mean())
     assert foresight == pytest.approx(lsmc)
+
+
+def test_correlations_that_cannot_hold_together_are_rejected(spark):
+    assert options.consistent(spark["corr"])
+    assert not options.consistent({"power_gas": 0.95, "power_carbon": 0.95, "gas_carbon": -0.5})

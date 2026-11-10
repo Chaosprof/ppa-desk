@@ -54,3 +54,33 @@ def test_slope_error_is_one_standard_error_of_the_change(monthly):
     m = capture.fit(monthly, "solar")
     assert capture.slope_error(m, today, future)[2036].to_numpy() == pytest.approx(m.se * np.log(2.0))
     assert capture.cannibalisation(m, today, future)[2036].to_numpy() == pytest.approx(m.beta * np.log(2.0))
+
+
+def test_year_ahead_error_recovers_what_penetration_does_not_explain():
+    """Each year lands a known distance from the model: that distance is the year-ahead error."""
+    idx = pd.period_range("2015-01", "2026-12", freq="M")
+    rng = np.random.default_rng(1)
+    season = 0.15 + 0.1 * np.clip(np.sin(np.pi * (idx.month.to_numpy() - 3) / 6), 0, None)
+    share = season * np.exp(0.1 * np.arange(len(idx)) / 12 + rng.normal(0, 0.1, len(idx)))
+    shock = dict(zip(range(2015, 2027), rng.normal(0, 0.05, 12), strict=True))
+    year_effect = np.array([shock[y] for y in idx.year])
+    monthly = pd.DataFrame({
+        "solar_share": share, "base": 80.0,
+        "solar_rate": 0.4 - 0.2 * np.log(share) + year_effect + rng.normal(0, 0.005, len(idx)),
+    }, index=idx)
+    a = capture.year_ahead(monthly, "solar", pd.Period("2026-12", "M"))
+    assert a["years"] == list(range(2018, 2027))  # the first three years are only fitted on
+    assert 0.03 < a["sd"] < 0.10 and 0 <= a["rho"] <= 0.9
+    calm = monthly.assign(solar_rate=0.4 - 0.2 * np.log(share))
+    assert capture.year_ahead(calm, "solar", pd.Period("2026-12", "M"))["sd"] < 1e-9
+    assert capture.year_ahead(monthly, "solar", pd.Period("2024-12", "M"))["years"][-1] == 2024
+
+
+def test_load_growth_makes_the_same_build_out_a_smaller_share(monthly):
+    capacity = pd.DataFrame({"solar": 100.0}, index=pd.date_range("2023-01-01", "2026-12-01", freq="MS"))
+    path = {"2027": 120, "2036": 200}
+    today, flat = capture.penetration_path(monthly, capacity, "solar", WINDOW, path)
+    again, grown = capture.penetration_path(monthly, capacity, "solar", WINDOW, path, load_growth=0.02)
+    assert (again == today).all() and flat[2036].to_numpy() == pytest.approx(today.to_numpy() * 2.0)
+    assert grown[2036].to_numpy() == pytest.approx(flat[2036].to_numpy() / 1.02 ** (2036.5 - 2025.25))
+    assert (grown[2027] < flat[2027]).all()

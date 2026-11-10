@@ -55,3 +55,34 @@ def test_next_calendar_rolls_each_january(history):
     price = history.set_index(["date", "contract"])["price"]
     assert cal.loc["2021-06-01"] == price[(pd.Timestamp("2021-06-01"), "Cal-22")]
     assert cal.loc["2022-01-03"] == price[(pd.Timestamp("2022-01-03"), "Cal-23")]
+
+
+def test_vol_from_monthly_averages_recovers_the_daily_vol():
+    """Averaging a month of prices removes a third of the variance of its change; the estimate puts it back."""
+    rng = np.random.default_rng(4)
+    dates = pd.bdate_range("1990-01-01", "2025-12-31")
+    price = pd.Series(30 * np.exp(np.cumsum(0.5 / np.sqrt(252) * rng.standard_normal(len(dates)))), index=dates)
+    monthly = price.groupby(price.index.to_period("M")).mean()
+    assert forwards.averaged_vol(monthly) == pytest.approx(0.5, rel=0.08)
+    assert np.log(monthly).diff().std() * np.sqrt(12) < 0.45  # uncorrected, it reads low
+
+
+def test_spark_inputs_measure_vols_and_correlations_over_the_window():
+    """Front-month power, gas and carbon driven by one shock: the vols come back and the correlations are high."""
+    rng = np.random.default_rng(6)
+    dates = pd.bdate_range("2022-01-03", "2025-12-31")
+    shock = rng.standard_normal(len(dates))
+    walk = lambda vol, own: np.exp(np.cumsum(vol / np.sqrt(252) * (0.9 * shock + np.sqrt(1 - 0.81) * own)))  # noqa: E731
+    power, gas, carbon = (walk(v, rng.standard_normal(len(dates))) for v in (0.4, 0.6, 0.3))
+    rows = []
+    for d, p in zip(dates, power, strict=True):
+        ahead = d + pd.offsets.MonthBegin(1)
+        rows.append({"date": d, "contract": f"{ahead:%b-%y}", "price": 100 * p})
+        rows.append({"date": d, "contract": f"Cal-{(d.year + 1) % 100:02d}", "price": 90 * p})
+    history = pd.DataFrame(rows)
+    eua = pd.Series(70 * carbon, index=dates)
+    gas_monthly = pd.Series(30 * gas, index=dates).resample("MS").mean()
+    s = forwards.spark_inputs(history, eua, gas_monthly, dates[-1].date(), months=36)
+    assert s["vol"]["power"] == pytest.approx(0.4, rel=0.1) and s["vol"]["carbon"] == pytest.approx(0.3, rel=0.1)
+    assert s["vol"]["gas"] == pytest.approx(0.6, rel=0.3)  # from 36 monthly averages
+    assert all(0.5 < c < 1 for c in s["corr"].values())

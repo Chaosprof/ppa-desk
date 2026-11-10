@@ -24,14 +24,25 @@
 ## Valuation
 
 - **Cannibalisation from the fundamental model.** The slope runs from +0.01 on 24 months to −0.47 on 60, and
-  the 10-year solar price from €44 to €26 with it. Replace the regression with the model's capture rate along
-  the capacity path (see the 2027–2036 projection below).
+  the 10-year solar price from €45 to €28 with it; the model with nothing else built says −0.98. Replace the
+  regression with the model's capture rate along the capacity path, with storage and flexible demand on
+  paths of their own (see the 2027–2036 projection below).
+- **Cannibalisation in the curve.** The capture-rate change is applied to the plant's revenue. Tilt the hourly
+  curve by it instead, so the Curve view, the battery and the negative hours in the paths see the build-out.
 - **Hedge liquidity.** Every calendar year is sold at today's curve at no cost. Add a second curve factor and
   price a stack-and-roll hedge beyond the liquid three years.
 - **Negative hours inside the paths.** The clause's paid share now follows the build-out, but the paths keep
   today's negative hours. Resample more of them as capacity grows, so the clause's risk sees their timing, and
   simulate the error in the unpaid share's slope.
 - **Wind's negative hours.** They follow wind penetration alone; add solar penetration as a second driver.
+- **Variation margin.** Initial margin is funded; the cash a short hedge needs in a rally is not. Simulate the
+  margin account along the level paths and cost its peak.
+- **Credit terms.** Exposure follows the price level alone. Add collateral thresholds and a parent guarantee,
+  and let the two capture errors move the exposure.
+- **Daily gas.** Gas vol and its correlations come from monthly averages. Swap in daily TTF settlements if a
+  feed becomes available.
+- **A second market.** Spain trades on OMIP itself and its solar capture fell earlier; the same pipeline with
+  REE data would test what is German in the method.
 
 ## Fundamental model
 

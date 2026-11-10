@@ -95,16 +95,45 @@ def backtest(monthly: pd.DataFrame, tech: str, start: pd.Period) -> dict:
     }
 
 
-def penetration_path(monthly: pd.DataFrame, capacity: pd.DataFrame, tech: str,
-                     window: tuple[dt.date, dt.date], path: dict) -> tuple[pd.Series, pd.DataFrame]:
-    """Window-average penetration by month, and its projection by scaling with installed capacity."""
+def year_ahead(monthly: pd.DataFrame, tech: str, upto: pd.Period) -> dict:
+    """How far the capture rate of a calendar year lands from the model fitted on the 36 months before it.
+
+    Each year is predicted given its realised penetration, so the error is what penetration does not
+    explain: weather, fuel prices and rule changes. Monthly errors are weighted by share and price. `sd` is
+    the root mean square error and `rho` its correlation from one year to the next; together they are the
+    year-to-year capture risk the valuation simulates, beside the slope's standard error.
+    """
+    m = monthly[monthly.index <= upto]
+    years, errors = [], []
+    for year in sorted(set(m.index.year)):
+        past, now = m[m.index.year < year], m[m.index.year == year]
+        if len(past) < LOOKBACK or len(now) < 9:
+            continue
+        predicted = fit(past, tech)(now.index.month.to_numpy(), now[f"{tech}_share"].to_numpy())
+        weight = now[f"{tech}_share"] * now["base"]
+        years.append(int(year))
+        errors.append(float(((now[f"{tech}_rate"] - predicted) * weight).sum() / weight.sum()))
+    e = np.array(errors)
+    rho = float(np.clip(np.corrcoef(e[:-1], e[1:])[0, 1], 0.0, 0.9)) if len(e) > 2 else 0.0
+    return {"years": years, "errors": e.round(4).tolist(), "sd": float(np.sqrt(np.mean(e**2))), "rho": rho}
+
+
+def penetration_path(monthly: pd.DataFrame, capacity: pd.DataFrame, tech: str, window: tuple[dt.date, dt.date],
+                     path: dict, load_growth: float = 0.0) -> tuple[pd.Series, pd.DataFrame]:
+    """Window-average penetration by month, and its projection: installed capacity over load.
+
+    Capacity follows `path` (GW by delivery year) and load grows by `load_growth` a year from the middle of
+    the window, so the same build-out is a smaller share of a larger market.
+    """
     lo, hi = pd.Period(window[0], "M"), pd.Period(window[1], "M")
     w = monthly[(monthly.index >= lo) & (monthly.index <= hi)]
     today = w[f"{tech}_share"].groupby(w.index.month).mean()
     cols = ["solar"] if tech == "solar" else ["wind_onshore", "wind_offshore"]
     cap = capacity[cols].sum(axis=1)
     cap = cap[(cap.index >= lo.to_timestamp()) & (cap.index <= hi.to_timestamp())].mean()
-    future = pd.DataFrame({int(y): today * gw / cap for y, gw in path.items()})
+    middle = (lo.year + (lo.month - 1) / 12 + hi.year + hi.month / 12) / 2
+    future = pd.DataFrame({int(y): today * gw / cap / (1 + load_growth) ** (int(y) + 0.5 - middle)
+                           for y, gw in path.items()})
     return today, future
 
 

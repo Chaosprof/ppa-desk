@@ -58,6 +58,45 @@ def vol_curve(term: list[dict]) -> Callable[[np.ndarray], np.ndarray]:
     return lambda tau: level[np.clip(np.searchsorted(lo, tau, side="right") - 1, 0, len(level) - 1)]
 
 
+def averaged_vol(monthly: pd.Series) -> float:
+    """Annualised vol of a price known only as monthly averages.
+
+    The change between two months' averages of a random walk has two thirds of the variance of a month-end
+    to month-end change (Working, 1960), so the monthly figure is scaled up by the square root of 3/2.
+    """
+    return float(np.log(monthly).diff().std(ddof=1) * np.sqrt(12 * 1.5))
+
+
+def spark_inputs(history: pd.DataFrame, eua: pd.Series, gas: pd.Series, valuation: dt.date, months: int) -> dict:
+    """Vols and correlations for the spark-spread option, measured over the trailing `months`.
+
+    Power is the daily return of monthly contracts within two months of delivery, and carbon the EUA auction
+    price from one auction to the next. Gas has no free daily price, so its vol comes from monthly averages
+    (`averaged_vol`). The correlations are those of changes in monthly averages, which daily settlements at
+    different hours would understate; power is there the next calendar year, within a contract.
+    """
+    end = pd.Timestamp(valuation)
+    since = end - pd.DateOffset(months=months)
+    r = returns(history)
+    power = r[(r["kind"] == "M") & (r["tau"] < 2 / 12) & (r["date"] > since)]["ret"]
+    carbon = np.log(eua[(eua.index > since) & (eua.index <= end)]).diff().dropna()
+    cal = next_calendar(history)
+    cal = np.log(cal.groupby(cal.index.to_period("M")).mean()).diff()
+    cal[cal.index.month == 1] = np.nan  # January's average is the next contract's
+    by_month = lambda s: s.groupby(s.index.to_period("M")).mean()  # noqa: E731
+    m = pd.DataFrame({"power": cal, "gas": np.log(by_month(gas)).diff(), "carbon": np.log(by_month(eua)).diff()})
+    m = m[m.index > pd.Period(since, "M")].dropna()
+    c = m.corr()
+    return {
+        "vol": {"power": round(vol(power), 4),
+                "gas": round(averaged_vol(by_month(gas)[m.index.min() - 1:m.index.max()]), 4),
+                "carbon": round(float(carbon.std(ddof=1) * np.sqrt(len(carbon) / (months / 12))), 4)},
+        "corr": {"power_gas": round(float(c.at["power", "gas"]), 3),
+                 "power_carbon": round(float(c.at["power", "carbon"]), 3),
+                 "gas_carbon": round(float(c.at["gas", "carbon"]), 3)},
+    }
+
+
 def next_calendar(history: pd.DataFrame) -> pd.Series:
     """Price of the next calendar-year contract on each day (Cal-27 during 2026, and so on)."""
     h = clean(history)
